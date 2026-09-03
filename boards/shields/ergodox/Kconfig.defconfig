@@ -1,0 +1,16 @@
+if SHIELD_ERGODOX_LEFT
+
+config ZMK_KEYBOARD_NAME
+    default "ErgoDox"
+
+config ZMK_SPLIT_ROLE_CENTRAL
+    default y
+
+endif
+
+if SHIELD_ERGODOX_RIGHT
+
+config ZMK_KEYBOARD_NAME
+    default "ErgoDox Right"
+
+endif
