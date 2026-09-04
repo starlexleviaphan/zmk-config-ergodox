@@ -84,12 +84,12 @@ D10 (P0.09 / &pro_micro 10) = Col 8
 [Левый ряд пинов - сверху вниз]
 D1  (P0.06 / &pro_micro 1)  =
 D0  (P0.08 / &pro_micro 0)  =
-D2  (P0.17 / &pro_micro 2)  = Row 4
-D3  (P0.20 / &pro_micro 3)  = Row 3
-D4  (P0.22 / &pro_micro 4)  = Row 2
-D5  (P0.24 / &pro_micro 5)  = Row 1
-D6  (P1.00 / &pro_micro 6)  = Row 0
-D7  (P0.11 / &pro_micro 7)  =
+D2  (P0.17 / &pro_micro 2)  =
+D3  (P0.20 / &pro_micro 3)  = Row 4
+D4  (P0.22 / &pro_micro 4)  = Row 3
+D5  (P0.24 / &pro_micro 5)  = Row 2
+D6  (P1.00 / &pro_micro 6)  = Row 1
+D7  (P0.11 / &pro_micro 7)  = Row 0
 D8  (P1.04 / &pro_micro 8)  =
 D9  (P1.06 / &pro_micro 9)  = Col 8
 
