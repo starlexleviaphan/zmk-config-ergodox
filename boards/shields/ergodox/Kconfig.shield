@@ -3,3 +3,6 @@ config SHIELD_ERGODOX_LEFT
 
 config SHIELD_ERGODOX_RIGHT
     def_bool $(shields_list_contains,ergodox_right)
+
+config SHIELD_ERGODOX_DONGLE
+    def_bool $(shields_list_contains,ergodox_dongle)
