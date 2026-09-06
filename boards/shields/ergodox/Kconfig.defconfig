@@ -3,10 +3,10 @@ if SHIELD_ERGODOX_DONGLE
 config ZMK_KEYBOARD_NAME
     default "ErgoDox"
 
-config ZMK_SPLIT_ROLE_CENTRAL
+config ZMK_SPLIT
     default y
 
-config ZMK_SPLIT
+config ZMK_SPLIT_ROLE_CENTRAL
     default y
 
 config ZMK_SPLIT_BLE_CENTRAL_PERIPHERALS
@@ -25,6 +25,9 @@ if SHIELD_ERGODOX_LEFT
 config ZMK_KEYBOARD_NAME
     default "ErgoDox Left"
 
+config ZMK_SPLIT
+    default y
+
 config ZMK_SPLIT_ROLE_CENTRAL
     default n
 
@@ -34,6 +37,9 @@ if SHIELD_ERGODOX_RIGHT
 
 config ZMK_KEYBOARD_NAME
     default "ErgoDox Right"
+
+config ZMK_SPLIT
+    default y
 
 config ZMK_SPLIT_ROLE_CENTRAL
     default n
