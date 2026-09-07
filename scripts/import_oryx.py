@@ -252,7 +252,7 @@ def format_layer_block(name, bindings, layout_spec):
     lines.append("        };")
     return "\n".join(lines)
 
-def convert_oryx_to_zmk(hash_or_url, apply_to_file=False):
+def convert_oryx_to_zmk(hash_or_url, apply_to_file=False, output_path=None, selected_layers=None, print_only=False, info_only=False):
     # Extract hash from URL if full URL is given
     m = re.search(r"layouts/([a-zA-Z0-9_-]+)", hash_or_url)
     hash_id = m.group(1) if m else hash_or_url.strip()
@@ -261,7 +261,14 @@ def convert_oryx_to_zmk(hash_or_url, apply_to_file=False):
     layout_data = fetch_oryx_layout(hash_id)
     title = layout_data.get("title", "Imported Oryx Layout")
     layers = layout_data["revision"]["layers"]
-    print(f"Found layout: '{title}' with {len(layers)} layers.")
+    layer_names = [l.get("title") or f"layer_{l.get('position')}" for l in layers]
+    print(f"Found layout: '{title}' ({len(layers)} layers: {layer_names})")
+
+    if info_only:
+        print("\nLayers in layout:")
+        for l in layers:
+            print(f"  Layer {l.get('position')}: {l.get('title') or '(untitled)'}")
+        return
 
     # Read layout spec for pretty formatting
     root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -273,6 +280,9 @@ def convert_oryx_to_zmk(hash_or_url, apply_to_file=False):
     layer_blocks = []
     for layer in layers:
         pos = layer["position"]
+        if selected_layers is not None and pos not in selected_layers:
+            continue
+
         raw_title = layer.get("title") or f"layer_{pos}"
         l_title = re.sub(r"[^a-zA-Z0-9_]", "_", raw_title).lower().strip("_")
         if not l_title or l_title.isdigit():
@@ -287,13 +297,31 @@ def convert_oryx_to_zmk(hash_or_url, apply_to_file=False):
 
         layer_blocks.append(format_layer_block(l_title, zmk_bindings, layout_spec))
 
+    if not layer_blocks:
+        print("No matching layers found.")
+        return
+
+    keymap_snippet = "\n\n".join(layer_blocks)
+
+    if print_only:
+        print("\n================== CONVERTED ZMK LAYERS ==================\n")
+        print(keymap_snippet)
+        print("\n==========================================================\n")
+        return
+
+    if output_path:
+        out_abs = os.path.abspath(output_path)
+        with open(out_abs, "w", encoding="utf-8") as f:
+            f.write(keymap_snippet + "\n")
+        print(f"Saved {len(layer_blocks)} layer(s) to {out_abs}")
+
     if apply_to_file:
         keymap_path = os.path.join(root_dir, "config", "ergodox.keymap")
         with open(keymap_path, "r", encoding="utf-8") as f:
             content = f.read()
 
         # Replace keymap body
-        new_keymap_body = "    keymap {\n        compatible = \"zmk,keymap\";\n\n" + "\n\n".join(layer_blocks) + "\n    };"
+        new_keymap_body = "    keymap {\n        compatible = \"zmk,keymap\";\n\n" + keymap_snippet + "\n    };"
         new_content = re.sub(r"    keymap\s*\{[^}]*compatible = \"zmk,keymap\";.*?\n    \};", new_keymap_body, content, flags=re.DOTALL)
 
         with open(keymap_path, "w", encoding="utf-8") as f:
@@ -304,14 +332,28 @@ def convert_oryx_to_zmk(hash_or_url, apply_to_file=False):
         with open(shield_km_path, "w", encoding="utf-8") as f:
             f.write(new_content)
 
-        print(f"Applied layout '{title}' ({len(layers)} layers) directly to config/ergodox.keymap!")
-    else:
-        print("\n--- Converted Keymap Layers Preview ---")
+        print(f"Applied layout '{title}' ({len(layer_blocks)} layers) directly to config/ergodox.keymap!")
+    elif not output_path and not print_only:
+        print("\n--- Converted Keymap Layers Preview (Pass --print to view all, --apply to save) ---")
         for lb in layer_blocks:
-            print(lb[:300] + "...\n")
-        print("\nTip: Pass --apply flag to write these layers directly to config/ergodox.keymap")
+            print(lb[:250] + "...\n")
 
 if __name__ == "__main__":
-    target = sys.argv[1] if len(sys.argv) > 1 else "default"
-    apply = "--apply" in sys.argv
-    convert_oryx_to_zmk(target, apply_to_file=apply)
+    import argparse
+    parser = argparse.ArgumentParser(description="Import layouts from ZSA Oryx (Ergodox EZ) directly into ZMK")
+    parser.add_argument("url_or_hash", nargs="?", default="default", help="Oryx layout URL or hash ID (e.g. bO05X)")
+    parser.add_argument("--apply", action="store_true", help="Apply directly to config/ergodox.keymap")
+    parser.add_argument("--layer", type=int, action="append", dest="layers", help="Extract only specific layer index (can be specified multiple times, e.g. --layer 0 --layer 2)")
+    parser.add_argument("--output", "-o", type=str, help="Save converted ZMK layer snippet to a file")
+    parser.add_argument("--print", "-p", action="store_true", help="Print converted ZMK code to console")
+    parser.add_argument("--info", "-i", action="store_true", help="List available layers in the layout")
+    
+    args = parser.parse_args()
+    convert_oryx_to_zmk(
+        args.url_or_hash,
+        apply_to_file=args.apply,
+        output_path=args.output,
+        selected_layers=args.layers,
+        print_only=args.print,
+        info_only=args.info
+    )
