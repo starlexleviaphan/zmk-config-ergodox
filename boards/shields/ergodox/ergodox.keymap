@@ -30,7 +30,7 @@
             // | SHIFT |  Z  |  X  |  C  |  V  |  B  |                         |   N   |  M  |  ,  |  .  |  /  | SHIFT |
             // | LCTRL | LGUI| LALT|MO(1)|MO(2)|                                       |MO(2)|MO(1)| RALT| RGUI| RCTRL |
             //                                       | HOME | PGUP |     | PGDN | END  |
-            //                                | ESC  | SPACE| LALT |     | RET  | BSPC | RGUI |
+            //                                | SPACE| ESC  | LALT |     | RGUI | BSPC | RET  |
             //                                              | DEL  |     | TAB  |
             &kp ESC   &kp N1   &kp N2   &kp N3   &kp N4   &kp N5   &kp DEL                      &kp BSPC  &kp N6   &kp N7   &kp N8    &kp N9   &kp N0   &kp MINUS
             &kp TAB   &kp Q    &kp W    &kp E    &kp R    &kp T    &kp LBKT                     &kp RBKT  &kp Y    &kp U    &kp I     &kp O    &kp P    &kp BSLH
@@ -38,7 +38,7 @@
             &kp LSHFT &kp Z    &kp X    &kp C    &kp V    &kp B                                           &kp N    &kp M    &kp COMMA &kp DOT  &kp FSLH &kp RSHFT
             &kp LCTRL &kp LGUI &kp LALT &mo 1    &mo 2                                                        &mo 2    &mo 1    &kp RALT  &kp RGUI &kp RCTRL
                                                           &kp HOME  &kp PG_UP             &kp PG_DN &kp END
-                                                &kp ESC   &kp SPACE &kp LALT              &kp RET   &kp BSPC  &kp RGUI
+                                                &kp SPACE &kp ESC   &kp LALT              &kp RGUI  &kp BSPC  &kp RET
                                                                     &kp DEL               &kp TAB
             >;
         };
