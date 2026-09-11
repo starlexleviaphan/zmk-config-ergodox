@@ -11,6 +11,7 @@ manifest:
   projects:
     - name: zmk
       remote: calvinhenderson
+      repo-path: zmk-dynamic-macros
       revision: main
       import: app/west.yml
   self:
