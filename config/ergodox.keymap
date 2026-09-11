@@ -152,7 +152,7 @@
             &trans          &trans          &trans          &trans          &trans          &trans          &kp PG_UP         &trans          &trans          &trans          &trans          &trans          &trans          &trans          
             &trans          &kp A           &kp S           &kp D           &kp F           &trans          &kp PG_DN         &trans          &trans          &kp J           &kp K           &kp L           &kp SEMI        &trans          
             &trans          &trans          &trans          &trans          &trans          &trans                            &trans          &trans          &trans          &trans          &trans          &lt 0 RSHFT     
-            &trans          &trans          &kp LC(Z)       &caps_word      &trans                                            &trans          &kp AS_UP       &kp AS_DOWN     &trans          &trans          
+            &trans          &trans          &kp LC(Z)       &caps_word      &trans                                            &trans          &trans          &trans          &trans          &trans          
                                                           &trans          &kp UP            &trans          &trans          
                                                 &trans          &trans          &kp DOWN          &trans          &trans          &trans          
                                                                     &trans            &trans          
