@@ -322,7 +322,7 @@
             &trans          &kp TILDE       &kp LBRC        &kp RBRC        &kp DQT         &kp PLUS        &kp PG_UP         &trans          &trans          &trans          &trans          &trans          &trans          &trans          
             &trans          &kp LEFT        &kp LT          &kp GT          &kp AMPS        &kp COLON       &kp PG_DN         &trans          &trans          &kp RGUI        &kp RCTRL       &kp RSHFT       &kp RALT        &trans          
             &trans          &kp QMARK       &kp CARET       &kp PRCNT       &kp PIPE        &kp ASTRK                         &trans          &tog 5          &tog 7          &tog 6          &trans          &kp RSHFT       
-            &trans          &trans          &kp QK_DYNAMIC_TAPPING_TERM_PRINT&kp LED_LEVEL   &trans                                            &trans          &kp QK_DYNAMIC_TAPPING_TERM_UP&kp QK_DYNAMIC_TAPPING_TERM_DOWN&trans          &trans          
+            &trans          &trans          &trans          &trans          &trans                                            &trans          &trans          &trans          &trans          &trans          
                                                           &to 0           &kp UP            &trans          &trans          
                                                 &trans          &trans          &kp DOWN          &trans          &trans          &none           
                                                                     &trans            &out OUT_TOG    
