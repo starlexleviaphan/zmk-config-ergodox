@@ -13,7 +13,6 @@
 #include <dt-bindings/zmk/bt.h>
 #include <dt-bindings/zmk/outputs.h>
 #include <dt-bindings/zmk/mouse.h>
-#include <dt-bindings/zmk/dynamic_macro.h>
 
 // Layer definitions
 #define WORK 0
@@ -101,7 +100,7 @@
             &kp RET         &kp Q           &kp W           &kp E           &kp R           &kp T           &mt PG_UP UP      &kp HOME        &kp Y           &kp U           &kp I           &kp O           &kp P           &kp BSLH        
             &kp MINUS       &hml LALT A     &hml LSHFT S    &hml LCTRL D    &hml_gui LGUI F &kp G           &mt PG_DN DOWN    &kp END         &kp H           &hmr_gui RGUI J &hmr RCTRL K    &hmr RSHFT L    &hmr RALT SEMI  &kp SQT         
             &mt LSHFT CLCK  &kp Z           &kp X           &kp C           &kp V           &kp B                             &kp N           &kp M           &kp COMMA       &kp DOT         &kp FSLH        &lt 3 RSHFT     
-            &mt LCTRL K_APP &mt LALT INS    &dm DM_PLY 1    &dm DM_PLY 0    &lt 6 DEL                                         &lt 13 ESC      &dm DM_REC 0    &dm DM_REC 1    &mt RALT PAUSE_BREAK&mt RCTRL PSCRN 
+            &mt LCTRL K_APP &mt LALT INS    &none           &none           &lt 6 DEL                                         &lt 13 ESC      &none           &none           &mt RALT PAUSE_BREAK&mt RCTRL PSCRN 
                                                           &tog 8          &sl 1             &kp LEFT        &kp RIGHT       
                                                 &lt 5 SPACE     &lt 7 BSPC      &sl 11            &lt 11 RET      &lt 4 SPACE     &tog 10         
                                                                     &kp TAB           &kp TAB         
@@ -237,7 +236,7 @@
             &kp TAB         &kp Q           &kp W           &kp E           &kp R           &kp T           &kp LBKT          &kp BSLH        &kp Y           &kp U           &kp I           &kp O           &kp P           &kp DEL         
             &kp CLCK        &kp A           &kp S           &kp D           &kp F           &kp G           &kp RBKT          &kp FSLH        &kp H           &kp J           &kp K           &kp L           &kp SEMI        &kp SQT         
             &kp LSHFT       &kp Z           &kp X           &kp C           &kp V           &kp B                             &kp N           &kp M           &kp COMMA       &kp DOT         &kp UP          &kp RSHFT       
-            &kp LCTRL       &kp LALT        &mkp MB5        &dm DM_PLY 1    &dm DM_PLY 0                                      &kp ESC         &dm DM_REC 0    &dm DM_REC 1    &kp LEFT        &kp DOWN        
+            &kp LCTRL       &kp LALT        &mkp MB5        &none           &none                                             &kp ESC         &none           &none           &kp LEFT        &kp DOWN        
                                                           &to 0           &sl 9             &kp LEFT        &kp RIGHT       
                                                 &kp SPACE       &kp RET         &kp LALT          &kp RET         &kp SPACE       &tog 10         
                                                                     &kp TAB           &kp RCTRL       
