@@ -17,6 +17,11 @@
         events = <0>;
     };
 
+    touchpad_listener: touchpad_listener {
+        compatible = "zmk,input-listener";
+        device = <&touchpad_split>;
+    };
+
     backlight: pwmleds {
         compatible = "pwm-leds";
         pwm_led_0: pwm_led_0 {

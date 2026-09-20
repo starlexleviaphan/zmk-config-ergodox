@@ -9,3 +9,6 @@ config SHIELD_ERGODOX_DONGLE
 
 config SHIELD_ERGODOX_DONGLE_DISPLAY
     def_bool $(shields_list_contains,ergodox_dongle_display)
+
+config SHIELD_ERGODOX_TOUCHPAD
+    def_bool $(shields_list_contains,ergodox_touchpad)

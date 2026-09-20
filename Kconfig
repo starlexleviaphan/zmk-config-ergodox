@@ -1,0 +1,4 @@
+# Copyright (c) 2026 ErgoDox Wireless Project
+# SPDX-License-Identifier: MIT
+
+rsource "drivers/input/Kconfig"

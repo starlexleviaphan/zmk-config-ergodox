@@ -1,0 +1,14 @@
+# Copyright (c) 2026 ErgoDox Wireless Project
+# SPDX-License-Identifier: MIT
+
+description: Synaptics TM-P3125 I2C-HID Touchpad
+
+compatible: "synaptics,tm-p3125"
+
+include: [i2c-device.yaml]
+
+properties:
+  irq-gpios:
+    type: phandle-array
+    required: true
+    description: GPIO pin connected to the touchpad INT line (Active-Low)

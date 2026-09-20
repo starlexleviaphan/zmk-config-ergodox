@@ -1,0 +1,11 @@
+# Copyright (c) 2026 ErgoDox Wireless Project
+# SPDX-License-Identifier: MIT
+
+menuconfig SYNAPTICS_TM_P3125
+    bool "Synaptics TM-P3125 I2C-HID Touchpad driver"
+    default y
+    depends on DT_HAS_SYNAPTICS_TM_P3125_ENABLED
+    select I2C
+    select INPUT
+    help
+      Enable driver for Synaptics TM-P3125 I2C-HID touchpad sensor.

@@ -10,13 +10,13 @@ config ZMK_SPLIT_ROLE_CENTRAL
     default y
 
 config ZMK_SPLIT_BLE_CENTRAL_PERIPHERALS
-    default 2
+    default 3
 
 config BT_MAX_CONN
-    default 7
+    default 8
 
 config BT_MAX_PAIRED
-    default 7
+    default 8
 
 endif
 
@@ -58,12 +58,26 @@ config ZMK_SPLIT_ROLE_CENTRAL
     default y
 
 config ZMK_SPLIT_BLE_CENTRAL_PERIPHERALS
-    default 2
+    default 3
 
 config BT_MAX_CONN
-    default 7
+    default 8
 
 config BT_MAX_PAIRED
-    default 7
+    default 8
 
 endif
+
+if SHIELD_ERGODOX_TOUCHPAD
+
+config ZMK_KEYBOARD_NAME
+    default "ErgoDox Touchpad"
+
+config ZMK_SPLIT
+    default y
+
+config ZMK_SPLIT_ROLE_CENTRAL
+    default n
+
+endif
+

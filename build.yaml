@@ -11,4 +11,7 @@ include:
   - board: nice_nano_v2
     shield: ergodox_right
   - board: nice_nano_v2
+    shield: ergodox_touchpad
+  - board: nice_nano_v2
     shield: settings_reset
+

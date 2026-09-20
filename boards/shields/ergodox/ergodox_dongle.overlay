@@ -12,6 +12,11 @@
         rows = <0>;
         events = <0>;
     };
+
+    touchpad_listener: touchpad_listener {
+        compatible = "zmk,input-listener";
+        device = <&touchpad_split>;
+    };
 };
 
 &kscan0 {
