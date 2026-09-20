@@ -17,10 +17,21 @@
         events = <0>;
     };
 
+    split_inputs {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        touchpad_split: touchpad_split@0 {
+            compatible = "zmk,input-split";
+            reg = <0>;
+        };
+    };
+
     touchpad_listener: touchpad_listener {
         compatible = "zmk,input-listener";
         device = <&touchpad_split>;
     };
+
 
     backlight: pwmleds {
         compatible = "pwm-leds";
