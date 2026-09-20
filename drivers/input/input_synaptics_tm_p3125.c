@@ -89,10 +89,10 @@ static void synaptics_work_handler(struct k_work *work)
             if (data->prev_two_finger) {
                 int16_t scroll_dy = (int16_t)avg_y - (int16_t)data->prev_scroll_y;
                 if (scroll_dy > SCROLL_THRESHOLD) {
-                    input_report_rel(dev, INPUT_REL_WHEEL, 1, false, K_NO_WAIT);
+                    input_report_rel(dev, INPUT_REL_WHEEL, 1, true, K_NO_WAIT);
                     data->prev_scroll_y = avg_y;
                 } else if (scroll_dy < -SCROLL_THRESHOLD) {
-                    input_report_rel(dev, INPUT_REL_WHEEL, -1, false, K_NO_WAIT);
+                    input_report_rel(dev, INPUT_REL_WHEEL, -1, true, K_NO_WAIT);
                     data->prev_scroll_y = avg_y;
                 }
             } else {
@@ -114,7 +114,7 @@ static void synaptics_work_handler(struct k_work *work)
                     if (dx != 0 || dy != 0) {
                         /* Direct proxy: moving up on touchpad moves cursor up */
                         input_report_rel(dev, INPUT_REL_X, dx, false, K_NO_WAIT);
-                        input_report_rel(dev, INPUT_REL_Y, -dy, false, K_NO_WAIT);
+                        input_report_rel(dev, INPUT_REL_Y, -dy, true, K_NO_WAIT);
                     }
                 } else {
                     data->touch_start_time = k_uptime_get();
@@ -139,7 +139,6 @@ static void synaptics_work_handler(struct k_work *work)
                 data->prev_touching = false;
             }
         }
-        input_sync(dev, K_NO_WAIT);
     } else if (report_id == SYNAPTICS_REPORT_MOUSE) {
         bool btn = (buf[3] & 0x01) != 0;
         if (btn != data->prev_btn_left) {
