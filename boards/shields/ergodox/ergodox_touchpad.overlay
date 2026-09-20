@@ -27,7 +27,6 @@
             compatible = "zmk,input-split";
             reg = <0>;
             device = <&touchpad>;
-            input = <&touchpad>;
         };
     };
 };
