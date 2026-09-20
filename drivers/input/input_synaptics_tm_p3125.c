@@ -156,6 +156,7 @@ static void synaptics_work_handler(struct k_work *work)
 static void synaptics_gpio_callback(const struct device *port, struct gpio_callback *cb, gpio_port_pins_t pins)
 {
     struct synaptics_data *data = CONTAINER_OF(cb, struct synaptics_data, gpio_cb);
+    LOG_INF("Touchpad INT pin triggered!");
     k_work_submit(&data->work);
 }
 
@@ -166,6 +167,10 @@ static int synaptics_init(const struct device *dev)
 
     data->dev = dev;
     k_work_init(&data->work, synaptics_work_handler);
+
+    LOG_INF("==================================================");
+    LOG_INF("=== Initializing Synaptics TM-P3125 Touchpad ===");
+    LOG_INF("==================================================");
 
     if (!i2c_is_ready_dt(&config->i2c)) {
         LOG_ERR("I2C bus not ready");
@@ -184,8 +189,31 @@ static int synaptics_init(const struct device *dev)
         return ret;
     }
 
-    /* Give the sensor 200 ms to stabilize power rail after controller boot */
-    k_msleep(200);
+    /* Scan I2C bus to check hardware connectivity */
+    LOG_INF("Scanning I2C bus for responsive devices...");
+    int found_devices = 0;
+    for (uint8_t addr = 0x08; addr <= 0x77; addr++) {
+        struct i2c_msg msgs[1];
+        uint8_t dummy = 0;
+        msgs[0].buf = &dummy;
+        msgs[0].len = 0;
+        msgs[0].flags = I2C_MSG_WRITE | I2C_MSG_STOP;
+        if (i2c_transfer(config->i2c.bus, msgs, 1, addr) == 0) {
+            LOG_INF(">>> FOUND I2C DEVICE AT 0x%02X <<<", addr);
+            found_devices++;
+        }
+    }
+    if (found_devices == 0) {
+        LOG_ERR(">>> NO I2C DEVICES RESPONDED ON THE BUS! <<<");
+        LOG_ERR("Check SDA/SCL lines (are they swapped?) and pull-up resistors (2.2k-4.7k to 3.3V)!");
+    } else {
+        LOG_INF("I2C scan complete. Total devices found: %d", found_devices);
+    }
+
+    LOG_INF("Current INT pin raw state: %d", gpio_pin_get_dt(&config->irq_gpio));
+
+    /* Give the sensor 250 ms to stabilize power rail after controller boot */
+    k_msleep(250);
 
     /* Step 1: Power On Command (Reg 0x0022, Opcode 0x08 = Set Power, Value 0x00 = Full Power) */
     uint8_t pwr_cmd[] = { 0x22, 0x00, 0x00, 0x08 };
