@@ -177,27 +177,60 @@ static int synaptics_init(const struct device *dev)
         return -ENODEV;
     }
 
-    /* Configure INT line as input with internal pull-up and falling edge interrupt */
+    /* Configure INT line as input with internal pull-up */
     int ret = gpio_pin_configure_dt(&config->irq_gpio, GPIO_INPUT | GPIO_PULL_UP);
     if (ret < 0) {
         LOG_ERR("Failed to configure IRQ GPIO: %d", ret);
         return ret;
     }
 
-    /* Step 1: Software Reset command via I2C (Reg 0x0022, Opcode 0x0001) */
+    /* Give the sensor 200 ms to stabilize power rail after controller boot */
+    k_msleep(200);
+
+    /* Step 1: Power On Command (Reg 0x0022, Opcode 0x08 = Set Power, Value 0x00 = Full Power) */
+    uint8_t pwr_cmd[] = { 0x22, 0x00, 0x00, 0x08 };
+    bool pwr_ok = false;
+    for (int retry = 0; retry < 5; retry++) {
+        ret = i2c_write_dt(&config->i2c, pwr_cmd, sizeof(pwr_cmd));
+        if (ret == 0) {
+            LOG_INF("Touchpad Power On ACK on attempt %d", retry + 1);
+            pwr_ok = true;
+            break;
+        }
+        LOG_WRN("Touchpad Power On attempt %d failed (err %d), retrying in 50ms...", retry + 1, ret);
+        k_msleep(50);
+    }
+
+    if (!pwr_ok) {
+        LOG_ERR("Failed to communicate with Synaptics touchpad on I2C address 0x2C");
+    }
+
+    k_msleep(50);
+
+    /* Step 2: Software Reset command (Reg 0x0022, Opcode 0x01) */
     uint8_t reset_cmd[] = { 0x22, 0x00, 0x00, 0x01 };
     ret = i2c_write_dt(&config->i2c, reset_cmd, sizeof(reset_cmd));
     if (ret < 0) {
         LOG_WRN("Touchpad soft reset write failed: %d", ret);
     }
 
-    /* Wait for controller initialization & clear reset packet */
-    k_msleep(150);
+    /* Wait for INT to go LOW (up to 500 ms) and clear reset response */
+    for (int t = 0; t < 50; t++) {
+        if (gpio_pin_get_dt(&config->irq_gpio) == 0) {
+            LOG_INF("Touchpad INT active after reset (t=%d ms)", t * 10);
+            break;
+        }
+        k_msleep(10);
+    }
+
     uint8_t flush_buf[60];
-    i2c_read_dt(&config->i2c, flush_buf, sizeof(flush_buf));
+    ret = i2c_read_dt(&config->i2c, flush_buf, sizeof(flush_buf));
+    if (ret < 0) {
+        LOG_WRN("Touchpad flush read failed: %d", ret);
+    }
     k_msleep(50);
 
-    /* Step 2: Switch to PTP Mode (SET_REPORT Feature Report 4 to value 3) */
+    /* Step 3: Switch to PTP Mode (SET_REPORT Feature Report 4 to value 3) */
     uint8_t ptp_cmd[] = { 0x22, 0x00, 0x34, 0x03, 0x23, 0x00, 0x04, 0x00, 0x04, 0x03 };
     ret = i2c_write_dt(&config->i2c, ptp_cmd, sizeof(ptp_cmd));
     if (ret < 0) {
@@ -206,7 +239,7 @@ static int synaptics_init(const struct device *dev)
     k_msleep(50);
     i2c_read_dt(&config->i2c, flush_buf, sizeof(flush_buf));
 
-    /* Step 3: Attach falling-edge interrupt */
+    /* Step 4: Attach falling-edge interrupt */
     ret = gpio_pin_interrupt_configure_dt(&config->irq_gpio, GPIO_INT_EDGE_FALLING);
     if (ret < 0) {
         LOG_ERR("Failed to configure interrupt: %d", ret);
@@ -218,6 +251,11 @@ static int synaptics_init(const struct device *dev)
     if (ret < 0) {
         LOG_ERR("Failed to add GPIO callback: %d", ret);
         return ret;
+    }
+
+    /* Process any initial packet if INT line is already low */
+    if (gpio_pin_get_dt(&config->irq_gpio) == 0) {
+        k_work_submit(&data->work);
     }
 
     LOG_INF("Synaptics TM-P3125 initialized successfully");
