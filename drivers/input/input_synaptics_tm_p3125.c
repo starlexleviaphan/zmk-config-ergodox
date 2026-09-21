@@ -73,21 +73,8 @@ static void synaptics_work_handler(struct k_work *work) {
   /* Always keep the 125 Hz loop running */
   k_work_schedule(&data->work, K_MSEC(8));
 
-  /* Check INT pin: active-low line means 0 = packet ready */
+  /* Check INT pin: active-low line means 0 = packet ready in FIFO */
   if (gpio_pin_get_dt(&config->irq_gpio) != 0) {
-    /* Pin is HIGH: no packet ready */
-    if (data->prev_touching) {
-      /* Finger was lifted: generate tap or release */
-      int64_t duration = k_uptime_get() - data->touch_start_time;
-      if (duration < TAP_MAX_DURATION_MS &&
-          data->total_move_x < TAP_MAX_MOVE &&
-          data->total_move_y < TAP_MAX_MOVE) {
-        input_report_key(dev, INPUT_BTN_LEFT, 1, true, K_NO_WAIT);
-        k_work_schedule(&data->tap_release_work, K_MSEC(20));
-      }
-      data->prev_touching = false;
-      data->prev_two_finger = false;
-    }
     return;
   }
 
