@@ -70,13 +70,31 @@ static void synaptics_work_handler(struct k_work *work) {
   const struct device *dev = data->dev;
   const struct synaptics_config *config = dev->config;
 
+  /* Always keep the 125 Hz loop running */
+  k_work_schedule(&data->work, K_MSEC(8));
+
+  /* Check INT pin: active-low line means 0 = packet ready */
+  if (gpio_pin_get_dt(&config->irq_gpio) != 0) {
+    /* Pin is HIGH: no packet ready */
+    if (data->prev_touching) {
+      /* Finger was lifted: generate tap or release */
+      int64_t duration = k_uptime_get() - data->touch_start_time;
+      if (duration < TAP_MAX_DURATION_MS &&
+          data->total_move_x < TAP_MAX_MOVE &&
+          data->total_move_y < TAP_MAX_MOVE) {
+        input_report_key(dev, INPUT_BTN_LEFT, 1, true, K_NO_WAIT);
+        k_work_schedule(&data->tap_release_work, K_MSEC(20));
+      }
+      data->prev_touching = false;
+      data->prev_two_finger = false;
+    }
+    return;
+  }
+
   uint8_t buf[60];
   int ret = i2c_read(config->i2c.bus, buf, sizeof(buf), data->active_addr);
   if (ret < 0) {
     LOG_WRN("Touchpad I2C read error: %d", ret);
-    if (gpio_pin_get_dt(&config->irq_gpio) == 0) {
-      k_work_schedule(&data->work, K_MSEC(8));
-    }
     return;
   }
 
@@ -133,9 +151,9 @@ static void synaptics_work_handler(struct k_work *work) {
             data->total_move_y += (dy > 0 ? dy : -dy);
 
             if (dx != 0 || dy != 0) {
-              /* Direct proxy: moving up on touchpad moves cursor up */
+              /* Inverted Y axis corrected: positive dy */
               input_report_rel(dev, INPUT_REL_X, dx, false, K_NO_WAIT);
-              input_report_rel(dev, INPUT_REL_Y, -dy, true, K_NO_WAIT);
+              input_report_rel(dev, INPUT_REL_Y, dy, true, K_NO_WAIT);
             }
           }
         } else {
@@ -166,14 +184,6 @@ static void synaptics_work_handler(struct k_work *work) {
       data->prev_btn_left = btn;
       input_report_key(dev, INPUT_BTN_LEFT, btn ? 1 : 0, true, K_NO_WAIT);
     }
-  }
-
-  /* CONTINUOUS STREAMING:
-   * Keep polling at ~125 Hz (every 8 ms) while fingers touch or while INT is asserted.
-   * This guarantees unbroken, jitter-free cursor tracking.
-   */
-  if (data->prev_touching || data->prev_two_finger || gpio_pin_get_dt(&config->irq_gpio) == 0) {
-    k_work_schedule(&data->work, K_MSEC(8));
   }
 }
 
@@ -319,10 +329,8 @@ static void synaptics_delayed_init_handler(struct k_work *work) {
     return;
   }
 
-  /* Process any initial packet if INT line is already low */
-  if (gpio_pin_get_dt(&config->irq_gpio) == 0) {
-    k_work_schedule(&data->work, K_NO_WAIT);
-  }
+  /* Start continuous 125 Hz polling loop */
+  k_work_schedule(&data->work, K_MSEC(10));
 
   LOG_INF("Synaptics TM-P3125 initialized successfully with I2C address 0x%02X!",
           data->active_addr);
