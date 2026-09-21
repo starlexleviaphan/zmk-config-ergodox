@@ -49,6 +49,9 @@ struct synaptics_data {
 
   /* Physical clickpad button */
   bool prev_btn_left;
+
+  /* Active I2C address */
+  uint16_t active_addr;
 };
 
 static void synaptics_work_handler(struct k_work *work) {
@@ -57,7 +60,7 @@ static void synaptics_work_handler(struct k_work *work) {
   const struct synaptics_config *config = dev->config;
 
   uint8_t buf[60];
-  int ret = i2c_read_dt(&config->i2c, buf, sizeof(buf));
+  int ret = i2c_read(config->i2c.bus, buf, sizeof(buf), data->active_addr);
   if (ret < 0) {
     LOG_WRN("Touchpad I2C read error: %d", ret);
     return;
