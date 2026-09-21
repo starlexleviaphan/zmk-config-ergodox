@@ -96,6 +96,9 @@ static void synaptics_work_handler(struct k_work *work) {
     uint16_t x0 = (uint16_t)(buf[4] | (buf[5] << 8));
     uint16_t y0 = (uint16_t)(buf[6] | (buf[7] << 8));
 
+    LOG_DBG("TOUCH: tip0=%d x0=%u y0=%u prev_touch=%d raw_bytes: %02X %02X %02X %02X %02X %02X",
+            tip0, x0, y0, data->prev_touching, buf[4], buf[5], buf[6], buf[7], buf[8], buf[9]);
+
     /* Slot 1 (Finger 2) */
     uint8_t status1 = buf[8];
     bool tip1 = (status1 & 0x02) != 0;
@@ -140,10 +143,12 @@ static void synaptics_work_handler(struct k_work *work) {
             data->total_move_y += (dy > 0 ? dy : -dy);
 
             if (dx != 0 || dy != 0) {
-              /* Inverted Y axis corrected: positive dy */
+              LOG_DBG("REL: dx=%d dy=%d", dx, dy);
               input_report_rel(dev, INPUT_REL_X, dx, false, K_NO_WAIT);
               input_report_rel(dev, INPUT_REL_Y, dy, true, K_NO_WAIT);
             }
+          } else {
+            LOG_WRN("Delta jump filtered out: dx=%d dy=%d", dx, dy);
           }
         } else {
           data->touch_start_time = k_uptime_get();
