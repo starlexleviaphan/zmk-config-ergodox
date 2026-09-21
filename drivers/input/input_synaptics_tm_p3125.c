@@ -12,7 +12,7 @@
 #include <zephyr/input/input.h>
 #include <zephyr/logging/log.h>
 
-LOG_MODULE_REGISTER(synaptics_tm_p3125, CONFIG_INPUT_LOG_LEVEL);
+LOG_MODULE_REGISTER(synaptics_tm_p3125, LOG_LEVEL_DBG);
 
 #define SYNAPTICS_REPORT_TOUCH 0x03
 #define SYNAPTICS_REPORT_MOUSE 0x02
@@ -29,6 +29,8 @@ struct synaptics_config {
 struct synaptics_data {
     const struct device *dev;
     struct k_work work;
+    struct k_work_delayable init_work;
+    struct k_work_delayable heartbeat_work;
     struct gpio_callback gpio_cb;
 
     /* 1-Finger tracking */
@@ -153,44 +155,43 @@ static void synaptics_work_handler(struct k_work *work)
     }
 }
 
+static void synaptics_delayed_init_handler(struct k_work *work);
+static void synaptics_heartbeat_handler(struct k_work *work);
+
 static void synaptics_gpio_callback(const struct device *port, struct gpio_callback *cb, gpio_port_pins_t pins)
 {
     struct synaptics_data *data = CONTAINER_OF(cb, struct synaptics_data, gpio_cb);
-    LOG_INF("Touchpad INT pin triggered!");
+    LOG_INF(">>> Touchpad INT pin triggered! <<<");
     k_work_submit(&data->work);
 }
 
-static int synaptics_init(const struct device *dev)
+static void synaptics_heartbeat_handler(struct k_work *work)
 {
+    struct k_work_delayable *dwork = k_work_delayable_from_work(work);
+    struct synaptics_data *data = CONTAINER_OF(dwork, struct synaptics_data, heartbeat_work);
+    const struct device *dev = data->dev;
     const struct synaptics_config *config = dev->config;
-    struct synaptics_data *data = dev->data;
 
-    data->dev = dev;
-    k_work_init(&data->work, synaptics_work_handler);
+    int int_val = gpio_pin_get_dt(&config->irq_gpio);
+    LOG_INF("[Touchpad Heartbeat] INT pin raw state = %d", int_val);
+
+    /* Repeat heartbeat every 3 seconds */
+    k_work_schedule(&data->heartbeat_work, K_SECONDS(3));
+}
+
+static void synaptics_delayed_init_handler(struct k_work *work)
+{
+    struct k_work_delayable *dwork = k_work_delayable_from_work(work);
+    struct synaptics_data *data = CONTAINER_OF(dwork, struct synaptics_data, init_work);
+    const struct device *dev = data->dev;
+    const struct synaptics_config *config = dev->config;
 
     LOG_INF("==================================================");
     LOG_INF("=== Initializing Synaptics TM-P3125 Touchpad ===");
     LOG_INF("==================================================");
 
-    if (!i2c_is_ready_dt(&config->i2c)) {
-        LOG_ERR("I2C bus not ready");
-        return -ENODEV;
-    }
-
-    if (!gpio_is_ready_dt(&config->irq_gpio)) {
-        LOG_ERR("IRQ GPIO not ready");
-        return -ENODEV;
-    }
-
-    /* Configure INT line as input with internal pull-up */
-    int ret = gpio_pin_configure_dt(&config->irq_gpio, GPIO_INPUT | GPIO_PULL_UP);
-    if (ret < 0) {
-        LOG_ERR("Failed to configure IRQ GPIO: %d", ret);
-        return ret;
-    }
-
     /* Scan I2C bus to check hardware connectivity */
-    LOG_INF("Scanning I2C bus for responsive devices...");
+    LOG_INF("Scanning I2C bus (0x08..0x77)...");
     int found_devices = 0;
     for (uint8_t addr = 0x08; addr <= 0x77; addr++) {
         struct i2c_msg msgs[1];
@@ -205,21 +206,18 @@ static int synaptics_init(const struct device *dev)
     }
     if (found_devices == 0) {
         LOG_ERR(">>> NO I2C DEVICES RESPONDED ON THE BUS! <<<");
-        LOG_ERR("Check SDA/SCL lines (are they swapped?) and pull-up resistors (2.2k-4.7k to 3.3V)!");
+        LOG_ERR("Check SDA (P0.17), SCL (P0.20), Pull-Ups (2.2k-4.7k to 3.3V) and Power!");
     } else {
         LOG_INF("I2C scan complete. Total devices found: %d", found_devices);
     }
 
     LOG_INF("Current INT pin raw state: %d", gpio_pin_get_dt(&config->irq_gpio));
 
-    /* Give the sensor 250 ms to stabilize power rail after controller boot */
-    k_msleep(250);
-
     /* Step 1: Power On Command (Reg 0x0022, Opcode 0x08 = Set Power, Value 0x00 = Full Power) */
     uint8_t pwr_cmd[] = { 0x22, 0x00, 0x00, 0x08 };
     bool pwr_ok = false;
     for (int retry = 0; retry < 5; retry++) {
-        ret = i2c_write_dt(&config->i2c, pwr_cmd, sizeof(pwr_cmd));
+        int ret = i2c_write_dt(&config->i2c, pwr_cmd, sizeof(pwr_cmd));
         if (ret == 0) {
             LOG_INF("Touchpad Power On ACK on attempt %d", retry + 1);
             pwr_ok = true;
@@ -237,7 +235,7 @@ static int synaptics_init(const struct device *dev)
 
     /* Step 2: Software Reset command (Reg 0x0022, Opcode 0x01) */
     uint8_t reset_cmd[] = { 0x22, 0x00, 0x00, 0x01 };
-    ret = i2c_write_dt(&config->i2c, reset_cmd, sizeof(reset_cmd));
+    int ret = i2c_write_dt(&config->i2c, reset_cmd, sizeof(reset_cmd));
     if (ret < 0) {
         LOG_WRN("Touchpad soft reset write failed: %d", ret);
     }
@@ -271,14 +269,14 @@ static int synaptics_init(const struct device *dev)
     ret = gpio_pin_interrupt_configure_dt(&config->irq_gpio, GPIO_INT_EDGE_FALLING);
     if (ret < 0) {
         LOG_ERR("Failed to configure interrupt: %d", ret);
-        return ret;
+        return;
     }
 
     gpio_init_callback(&data->gpio_cb, synaptics_gpio_callback, BIT(config->irq_gpio.pin));
     ret = gpio_add_callback(config->irq_gpio.port, &data->gpio_cb);
     if (ret < 0) {
         LOG_ERR("Failed to add GPIO callback: %d", ret);
-        return ret;
+        return;
     }
 
     /* Process any initial packet if INT line is already low */
@@ -286,7 +284,42 @@ static int synaptics_init(const struct device *dev)
         k_work_submit(&data->work);
     }
 
-    LOG_INF("Synaptics TM-P3125 initialized successfully");
+    LOG_INF("Synaptics TM-P3125 initialized successfully!");
+
+    /* Start periodic heartbeat every 3 seconds to keep live diagnostics in terminal */
+    k_work_schedule(&data->heartbeat_work, K_SECONDS(3));
+}
+
+static int synaptics_init(const struct device *dev)
+{
+    const struct synaptics_config *config = dev->config;
+    struct synaptics_data *data = dev->data;
+
+    data->dev = dev;
+    k_work_init(&data->work, synaptics_work_handler);
+    k_work_init_delayable(&data->init_work, synaptics_delayed_init_handler);
+    k_work_init_delayable(&data->heartbeat_work, synaptics_heartbeat_handler);
+
+    if (!i2c_is_ready_dt(&config->i2c)) {
+        LOG_ERR("I2C bus not ready");
+        return -ENODEV;
+    }
+
+    if (!gpio_is_ready_dt(&config->irq_gpio)) {
+        LOG_ERR("IRQ GPIO not ready");
+        return -ENODEV;
+    }
+
+    /* Configure INT line as input with internal pull-up */
+    int ret = gpio_pin_configure_dt(&config->irq_gpio, GPIO_INPUT | GPIO_PULL_UP);
+    if (ret < 0) {
+        LOG_ERR("Failed to configure IRQ GPIO: %d", ret);
+        return ret;
+    }
+
+    /* Schedule delayed initialization in 3500 ms so USB CDC ACM is active */
+    k_work_schedule(&data->init_work, K_MSEC(3500));
+
     return 0;
 }
 
