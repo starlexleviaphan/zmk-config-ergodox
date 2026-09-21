@@ -207,68 +207,45 @@ static void synaptics_delayed_init_handler(struct k_work *work) {
 
   /* Configure INT line as input with internal pull-up */
   /* Scan I2C bus to check hardware connectivity */
-  LOG_INF("Scanning I2C bus (0x08..0x77)...");
-  uint8_t found_addrs[16];
-  int found_devices = 0;
-  for (uint8_t addr = 0x08; addr <= 0x77; addr++) {
-    struct i2c_msg msgs[1];
-    uint8_t dummy = 0;
-    msgs[0].buf = &dummy;
-    msgs[0].len = 0;
-    msgs[0].flags = I2C_MSG_WRITE | I2C_MSG_STOP;
-    if (i2c_transfer(config->i2c.bus, msgs, 1, addr) == 0) {
-      LOG_INF(">>> FOUND I2C DEVICE AT 0x%02X <<<", addr);
-      if (found_devices < 16) {
-        found_addrs[found_devices++] = addr;
-      }
-    }
-  }
-  if (found_devices == 0) {
-    LOG_ERR(">>> NO I2C DEVICES RESPONDED ON THE BUS! <<<");
-    LOG_ERR(
-        "Check SDA (P0.17), SCL (P0.20), Pull-Ups (2.2k-4.7k to 3.3V) and "
-        "Power!");
-  } else {
-    LOG_INF("I2C scan complete. Total devices found: %d", found_devices);
-  }
-
   LOG_INF("Current INT pin raw state: %d", gpio_pin_get_dt(&config->irq_gpio));
 
-  /* Auto-detect the working touchpad address among discovered devices */
+  /* Step 1: Probe confirmed hardware address 0x2C directly */
   uint16_t target_addr = 0;
   uint8_t pwr_cmd[] = {0x22, 0x00, 0x00, 0x08};
-
-  for (int i = 0; i < found_devices; i++) {
-    uint8_t test_addr = found_addrs[i];
-    LOG_INF("Testing Power On on candidate address 0x%02X...", test_addr);
-    for (int retry = 0; retry < 3; retry++) {
-      int ret = i2c_write(config->i2c.bus, pwr_cmd, sizeof(pwr_cmd), test_addr);
-      if (ret == 0) {
-        LOG_INF(">>> TOUCHPAD CONFIRMED AND ACKED ON ADDRESS 0x%02X! <<<",
-                test_addr);
-        target_addr = test_addr;
-        break;
-      }
-      k_msleep(20);
-    }
-    if (target_addr != 0) {
+  LOG_INF("Probing Touchpad Power On on address 0x2C...");
+  for (int retry = 0; retry < 5; retry++) {
+    int ret = i2c_write(config->i2c.bus, pwr_cmd, sizeof(pwr_cmd), 0x2C);
+    if (ret == 0) {
+      LOG_INF(">>> TOUCHPAD CONFIRMED AND ACKED ON ADDRESS 0x2C! <<<");
+      target_addr = 0x2C;
       break;
     }
-    LOG_WRN("Candidate 0x%02X did not accept Power On", test_addr);
+    k_msleep(30);
+  }
+
+  /* Fallback scan if 0x2C did not ACK */
+  if (target_addr == 0) {
+    LOG_WRN("0x2C did not respond immediately, scanning I2C bus (0x08..0x77)...");
+    for (uint8_t addr = 0x08; addr <= 0x77; addr++) {
+      uint8_t dummy = 0;
+      if (i2c_write(config->i2c.bus, &dummy, 1, addr) == 0) {
+        LOG_INF("Found responsive device at 0x%02X, testing Power On...", addr);
+        if (i2c_write(config->i2c.bus, pwr_cmd, sizeof(pwr_cmd), addr) == 0) {
+          LOG_INF(">>> TOUCHPAD CONFIRMED ON 0x%02X! <<<", addr);
+          target_addr = addr;
+          break;
+        }
+      }
+    }
   }
 
   if (target_addr == 0) {
-    if (found_devices > 0) {
-      target_addr = found_addrs[0];
-      LOG_WRN("Defaulting to first discovered address 0x%02X", target_addr);
-    } else {
-      target_addr = 0x2C;
-      LOG_ERR("Defaulting to 0x2C");
-    }
+    target_addr = 0x2C;
+    LOG_WRN("No device ACKed, defaulting to 0x2C");
   }
 
   data->active_addr = target_addr;
-  LOG_INF("Using Active I2C Address: 0x%02X", data->active_addr);
+  LOG_INF("Active Touchpad I2C Address set to: 0x%02X", data->active_addr);
 
   k_msleep(50);
 
