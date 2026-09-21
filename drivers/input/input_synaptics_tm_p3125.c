@@ -73,7 +73,11 @@ static void synaptics_work_handler(struct k_work *work) {
   /* Always keep the 125 Hz loop running */
   k_work_schedule(&data->work, K_MSEC(8));
 
-  /* Read all pending packets from FIFO while INT is asserted (active-low = asserted when pin_active > 0) */
+  int16_t acc_dx = 0;
+  int16_t acc_dy = 0;
+  bool has_rel = false;
+
+  /* Read all pending packets from FIFO while INT is asserted */
   for (int iter = 0; iter < 10; iter++) {
     int pin_active = gpio_pin_get_dt(&config->irq_gpio);
     if (pin_active <= 0) {
@@ -105,7 +109,7 @@ static void synaptics_work_handler(struct k_work *work) {
       bool physical_btn = (buf[31] & 0x01) != 0;
       if (physical_btn != data->prev_btn_left) {
         data->prev_btn_left = physical_btn;
-        input_report_key(dev, INPUT_BTN_LEFT, physical_btn ? 1 : 0, false,
+        input_report_key(dev, INPUT_BTN_LEFT, physical_btn ? 1 : 0, true,
                          K_NO_WAIT);
       }
 
@@ -130,58 +134,63 @@ static void synaptics_work_handler(struct k_work *work) {
         }
         data->prev_touching = false;
       } else {
-      data->prev_two_finger = false;
+        data->prev_two_finger = false;
 
-      if (tip0) {
-        if (data->prev_touching) {
-          int16_t dx = (int16_t)x0 - (int16_t)data->prev_x0;
-          int16_t dy = (int16_t)y0 - (int16_t)data->prev_y0;
+        if (tip0) {
+          if (data->prev_touching) {
+            int16_t dx = (int16_t)x0 - (int16_t)data->prev_x0;
+            int16_t dy = (int16_t)y0 - (int16_t)data->prev_y0;
 
-          /* Filter out abnormal jumps on boundary transitions */
-          if (dx > -300 && dx < 300 && dy > -300 && dy < 300) {
-            data->total_move_x += (dx > 0 ? dx : -dx);
-            data->total_move_y += (dy > 0 ? dy : -dy);
+            /* Filter out abnormal jumps on boundary transitions */
+            if (dx > -300 && dx < 300 && dy > -300 && dy < 300) {
+              data->total_move_x += (dx > 0 ? dx : -dx);
+              data->total_move_y += (dy > 0 ? dy : -dy);
 
-            if (dx != 0 || dy != 0) {
-              LOG_DBG("REL: dx=%d dy=%d", dx, dy);
-              input_report_rel(dev, INPUT_REL_X, dx, false, K_NO_WAIT);
-              input_report_rel(dev, INPUT_REL_Y, dy, true, K_NO_WAIT);
+              acc_dx += dx;
+              acc_dy += dy;
+              has_rel = true;
+            } else {
+              LOG_WRN("Delta jump filtered out: dx=%d dy=%d", dx, dy);
             }
           } else {
-            LOG_WRN("Delta jump filtered out: dx=%d dy=%d", dx, dy);
+            data->touch_start_time = k_uptime_get();
+            data->total_move_x = 0;
+            data->total_move_y = 0;
           }
+          data->prev_x0 = x0;
+          data->prev_y0 = y0;
+          data->prev_touching = true;
         } else {
-          data->touch_start_time = k_uptime_get();
-          data->total_move_x = 0;
-          data->total_move_y = 0;
-        }
-        data->prev_x0 = x0;
-        data->prev_y0 = y0;
-        data->prev_touching = true;
-      } else {
-        /* Release event: check tap-to-click */
-        if (data->prev_touching) {
-          int64_t duration = k_uptime_get() - data->touch_start_time;
-          LOG_DBG("RELEASE: dur=%lld ms move_x=%d move_y=%d", duration, data->total_move_x, data->total_move_y);
-          if (duration < TAP_MAX_DURATION_MS &&
-              data->total_move_x < TAP_MAX_MOVE &&
-              data->total_move_y < TAP_MAX_MOVE) {
-            LOG_INF(">>> TAP CLICK DETECTED! Sending BTN_LEFT <<<");
-            input_report_key(dev, INPUT_BTN_LEFT, 1, true, K_NO_WAIT);
-            k_work_schedule(&data->tap_release_work, K_MSEC(50));
+          /* Release event: check tap-to-click */
+          if (data->prev_touching) {
+            int64_t duration = k_uptime_get() - data->touch_start_time;
+            LOG_DBG("RELEASE: dur=%lld ms move_x=%d move_y=%d", duration, data->total_move_x, data->total_move_y);
+            if (duration < TAP_MAX_DURATION_MS &&
+                data->total_move_x < TAP_MAX_MOVE &&
+                data->total_move_y < TAP_MAX_MOVE) {
+              LOG_INF(">>> TAP CLICK DETECTED! Sending BTN_LEFT <<<");
+              input_report_key(dev, INPUT_BTN_LEFT, 1, true, K_NO_WAIT);
+              k_work_schedule(&data->tap_release_work, K_MSEC(50));
+            }
           }
+          data->prev_touching = false;
         }
-        data->prev_touching = false;
+      }
+    } else if (report_id == SYNAPTICS_REPORT_MOUSE) {
+      bool btn = (buf[3] & 0x01) != 0;
+      if (btn != data->prev_btn_left) {
+        data->prev_btn_left = btn;
+        input_report_key(dev, INPUT_BTN_LEFT, btn ? 1 : 0, true, K_NO_WAIT);
       }
     }
-  } else if (report_id == SYNAPTICS_REPORT_MOUSE) {
-    bool btn = (buf[3] & 0x01) != 0;
-    if (btn != data->prev_btn_left) {
-      data->prev_btn_left = btn;
-      input_report_key(dev, INPUT_BTN_LEFT, btn ? 1 : 0, true, K_NO_WAIT);
-    }
+  } /* End for */
+
+  /* Emit aggregated movement across all drained packets in a single radio frame */
+  if (has_rel && (acc_dx != 0 || acc_dy != 0)) {
+    LOG_DBG("REL: acc_dx=%d acc_dy=%d", acc_dx, acc_dy);
+    input_report_rel(dev, INPUT_REL_X, acc_dx, false, K_NO_WAIT);
+    input_report_rel(dev, INPUT_REL_Y, acc_dy, true, K_NO_WAIT);
   }
-  } /* End for (int iter = 0; iter < 10; iter++) */
 }
 
 static void synaptics_delayed_init_handler(struct k_work *work);
