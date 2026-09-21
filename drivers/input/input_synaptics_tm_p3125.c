@@ -341,8 +341,7 @@ static void synaptics_delayed_init_handler(struct k_work *work) {
   LOG_INF("Synaptics TM-P3125 initialized successfully with I2C address 0x%02X!",
           data->active_addr);
 
-  /* Start periodic heartbeat every 3 seconds to keep live diagnostics in terminal */
-  k_work_schedule(&data->heartbeat_work, K_SECONDS(3));
+  /* Diagnostics completed */
 }
 
 static int synaptics_init(const struct device *dev) {
