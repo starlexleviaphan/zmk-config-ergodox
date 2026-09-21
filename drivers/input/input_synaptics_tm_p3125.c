@@ -73,8 +73,9 @@ static void synaptics_work_handler(struct k_work *work) {
   /* Always keep the 125 Hz loop running */
   k_work_schedule(&data->work, K_MSEC(8));
 
-  /* Check INT pin: active-low line means 0 = packet ready in FIFO */
-  if (gpio_pin_get_dt(&config->irq_gpio) != 0) {
+  /* Check INT pin: with GPIO_ACTIVE_LOW in DT, gpio_pin_get_dt() returns 1 when line is physically LOW (asserted/active) */
+  int pin_active = gpio_pin_get_dt(&config->irq_gpio);
+  if (pin_active <= 0) {
     return;
   }
 
@@ -86,6 +87,7 @@ static void synaptics_work_handler(struct k_work *work) {
   }
 
   uint8_t report_id = buf[2];
+  LOG_DBG("INT fired! report_id=0x%02X len=%d %02X %02X %02X %02X", report_id, ret, buf[0], buf[1], buf[2], buf[3]);
 
   if (report_id == SYNAPTICS_REPORT_TOUCH) {
     /* Slot 0 (Finger 1) */
