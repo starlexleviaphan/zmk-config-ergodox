@@ -158,21 +158,38 @@ static void synaptics_work_handler(struct k_work *work) {
   }
 }
 
+static void synaptics_delayed_init_handler(struct k_work *work);
+static void synaptics_heartbeat_handler(struct k_work *work);
+
 static void synaptics_gpio_callback(const struct device *port,
                                     struct gpio_callback *cb,
                                     gpio_port_pins_t pins) {
   struct synaptics_data *data =
       CONTAINER_OF(cb, struct synaptics_data, gpio_cb);
-  LOG_INF("Touchpad INT pin triggered!");
+  LOG_INF(">>> Touchpad INT pin triggered! <<<");
   k_work_submit(&data->work);
 }
 
-static int synaptics_init(const struct device *dev) {
+static void synaptics_heartbeat_handler(struct k_work *work) {
+  struct k_work_delayable *dwork = k_work_delayable_from_work(work);
+  struct synaptics_data *data =
+      CONTAINER_OF(dwork, struct synaptics_data, heartbeat_work);
+  const struct device *dev = data->dev;
   const struct synaptics_config *config = dev->config;
-  struct synaptics_data *data = dev->data;
 
-  data->dev = dev;
-  k_work_init(&data->work, synaptics_work_handler);
+  int int_val = gpio_pin_get_dt(&config->irq_gpio);
+  LOG_INF("[Touchpad Heartbeat] Active I2C=0x%02X | INT pin raw state = %d",
+          data->active_addr, int_val);
+
+  k_work_schedule(&data->heartbeat_work, K_SECONDS(3));
+}
+
+static void synaptics_delayed_init_handler(struct k_work *work) {
+  struct k_work_delayable *dwork = k_work_delayable_from_work(work);
+  struct synaptics_data *data =
+      CONTAINER_OF(dwork, struct synaptics_data, init_work);
+  const struct device *dev = data->dev;
+  const struct synaptics_config *config = dev->config;
 
   LOG_INF("==================================================");
   LOG_INF("=== Initializing Synaptics TM-P3125 Touchpad ===");
