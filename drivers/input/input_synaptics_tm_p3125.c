@@ -55,6 +55,9 @@ struct synaptics_data {
 
   /* Active I2C address */
   uint16_t active_addr;
+
+  /* Keep-alive tracking */
+  int64_t last_event_time;
 };
 
 static void synaptics_tap_release_handler(struct k_work *work) {
@@ -187,9 +190,18 @@ static void synaptics_work_handler(struct k_work *work) {
 
   /* Emit aggregated movement across all drained packets in a single radio frame */
   if (has_rel && (acc_dx != 0 || acc_dy != 0)) {
+    data->last_event_time = k_uptime_get();
     LOG_DBG("REL: acc_dx=%d acc_dy=%d", acc_dx, acc_dy);
     input_report_rel(dev, INPUT_REL_X, acc_dx, false, K_NO_WAIT);
     input_report_rel(dev, INPUT_REL_Y, acc_dy, true, K_NO_WAIT);
+  } else if (!data->prev_touching) {
+    /* Send a zero-rel keep-alive event every 500ms while idle to prevent BLE supervision timeout */
+    int64_t now = k_uptime_get();
+    if (now - data->last_event_time > 500) {
+      data->last_event_time = now;
+      input_report_rel(dev, INPUT_REL_X, 0, false, K_NO_WAIT);
+      input_report_rel(dev, INPUT_REL_Y, 0, true, K_NO_WAIT);
+    }
   }
 }
 
