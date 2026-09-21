@@ -28,7 +28,7 @@ struct synaptics_config {
 
 struct synaptics_data {
   const struct device *dev;
-  struct k_work work;
+  struct k_work_delayable work;
   struct k_work_delayable init_work;
   struct k_work_delayable heartbeat_work;
   struct gpio_callback gpio_cb;
@@ -65,110 +65,115 @@ static void synaptics_tap_release_handler(struct k_work *work) {
 }
 
 static void synaptics_work_handler(struct k_work *work) {
-  struct synaptics_data *data = CONTAINER_OF(work, struct synaptics_data, work);
+  struct k_work_delayable *dwork = k_work_delayable_from_work(work);
+  struct synaptics_data *data = CONTAINER_OF(dwork, struct synaptics_data, work);
   const struct device *dev = data->dev;
   const struct synaptics_config *config = dev->config;
 
-  for (int iter = 0; iter < 4; iter++) {
-    uint8_t buf[60];
-    int ret = i2c_read(config->i2c.bus, buf, sizeof(buf), data->active_addr);
-    if (ret < 0) {
-      LOG_WRN("Touchpad I2C read error: %d", ret);
-      break;
+  uint8_t buf[60];
+  int ret = i2c_read(config->i2c.bus, buf, sizeof(buf), data->active_addr);
+  if (ret < 0) {
+    LOG_WRN("Touchpad I2C read error: %d", ret);
+    if (gpio_pin_get_dt(&config->irq_gpio) == 0) {
+      k_work_schedule(&data->work, K_MSEC(8));
+    }
+    return;
+  }
+
+  uint8_t report_id = buf[2];
+
+  if (report_id == SYNAPTICS_REPORT_TOUCH) {
+    /* Slot 0 (Finger 1) */
+    uint8_t status0 = buf[3];
+    bool tip0 = (status0 & 0x02) != 0;
+    uint16_t x0 = (uint16_t)(buf[4] | (buf[5] << 8));
+    uint16_t y0 = (uint16_t)(buf[6] | (buf[7] << 8));
+
+    /* Slot 1 (Finger 2) */
+    uint8_t status1 = buf[8];
+    bool tip1 = (status1 & 0x02) != 0;
+    uint16_t y1 = (uint16_t)(buf[11] | (buf[12] << 8));
+
+    /* Physical button on clickpad */
+    bool physical_btn = (buf[31] & 0x01) != 0;
+    if (physical_btn != data->prev_btn_left) {
+      data->prev_btn_left = physical_btn;
+      input_report_key(dev, INPUT_BTN_LEFT, physical_btn ? 1 : 0, false,
+                       K_NO_WAIT);
     }
 
-    uint8_t report_id = buf[2];
-
-    if (report_id == SYNAPTICS_REPORT_TOUCH) {
-      /* Slot 0 (Finger 1) */
-      uint8_t status0 = buf[3];
-      bool tip0 = (status0 & 0x02) != 0;
-      uint16_t x0 = (uint16_t)(buf[4] | (buf[5] << 8));
-      uint16_t y0 = (uint16_t)(buf[6] | (buf[7] << 8));
-
-      /* Slot 1 (Finger 2) */
-      uint8_t status1 = buf[8];
-      bool tip1 = (status1 & 0x02) != 0;
-      uint16_t y1 = (uint16_t)(buf[11] | (buf[12] << 8));
-
-      /* Physical button on clickpad */
-      bool physical_btn = (buf[31] & 0x01) != 0;
-      if (physical_btn != data->prev_btn_left) {
-        data->prev_btn_left = physical_btn;
-        input_report_key(dev, INPUT_BTN_LEFT, physical_btn ? 1 : 0, false,
-                         K_NO_WAIT);
+    /* Gestures: 2-finger scroll vs 1-finger cursor */
+    if (tip0 && tip1) {
+      uint16_t avg_y = (y0 + y1) / 2;
+      if (data->prev_two_finger) {
+        int16_t scroll_dy = (int16_t)avg_y - (int16_t)data->prev_scroll_y;
+        if (scroll_dy > SCROLL_THRESHOLD) {
+          input_report_rel(dev, INPUT_REL_WHEEL, 1, true, K_NO_WAIT);
+          data->prev_scroll_y = avg_y;
+        } else if (scroll_dy < -SCROLL_THRESHOLD) {
+          input_report_rel(dev, INPUT_REL_WHEEL, -1, true, K_NO_WAIT);
+          data->prev_scroll_y = avg_y;
+        }
+      } else {
+        data->prev_scroll_y = avg_y;
+        data->prev_two_finger = true;
       }
+      data->prev_touching = false;
+    } else {
+      data->prev_two_finger = false;
 
-      /* Gestures: 2-finger scroll vs 1-finger cursor */
-      if (tip0 && tip1) {
-        uint16_t avg_y = (y0 + y1) / 2;
-        if (data->prev_two_finger) {
-          int16_t scroll_dy = (int16_t)avg_y - (int16_t)data->prev_scroll_y;
-          if (scroll_dy > SCROLL_THRESHOLD) {
-            input_report_rel(dev, INPUT_REL_WHEEL, 1, true, K_NO_WAIT);
-            data->prev_scroll_y = avg_y;
-          } else if (scroll_dy < -SCROLL_THRESHOLD) {
-            input_report_rel(dev, INPUT_REL_WHEEL, -1, true, K_NO_WAIT);
-            data->prev_scroll_y = avg_y;
+      if (tip0) {
+        if (data->prev_touching) {
+          int16_t dx = (int16_t)x0 - (int16_t)data->prev_x0;
+          int16_t dy = (int16_t)y0 - (int16_t)data->prev_y0;
+
+          /* Filter out abnormal jumps on boundary transitions */
+          if (dx > -300 && dx < 300 && dy > -300 && dy < 300) {
+            data->total_move_x += (dx > 0 ? dx : -dx);
+            data->total_move_y += (dy > 0 ? dy : -dy);
+
+            if (dx != 0 || dy != 0) {
+              /* Direct proxy: moving up on touchpad moves cursor up */
+              input_report_rel(dev, INPUT_REL_X, dx, false, K_NO_WAIT);
+              input_report_rel(dev, INPUT_REL_Y, -dy, true, K_NO_WAIT);
+            }
           }
         } else {
-          data->prev_scroll_y = avg_y;
-          data->prev_two_finger = true;
+          data->touch_start_time = k_uptime_get();
+          data->total_move_x = 0;
+          data->total_move_y = 0;
+        }
+        data->prev_x0 = x0;
+        data->prev_y0 = y0;
+        data->prev_touching = true;
+      } else {
+        /* Release event: check tap-to-click */
+        if (data->prev_touching) {
+          int64_t duration = k_uptime_get() - data->touch_start_time;
+          if (duration < TAP_MAX_DURATION_MS &&
+              data->total_move_x < TAP_MAX_MOVE &&
+              data->total_move_y < TAP_MAX_MOVE) {
+            input_report_key(dev, INPUT_BTN_LEFT, 1, true, K_NO_WAIT);
+            k_work_schedule(&data->tap_release_work, K_MSEC(20));
+          }
         }
         data->prev_touching = false;
-      } else {
-        data->prev_two_finger = false;
-
-        if (tip0) {
-          if (data->prev_touching) {
-            int16_t dx = (int16_t)x0 - (int16_t)data->prev_x0;
-            int16_t dy = (int16_t)y0 - (int16_t)data->prev_y0;
-
-            /* Filter out abnormal jumps on boundary transitions */
-            if (dx > -300 && dx < 300 && dy > -300 && dy < 300) {
-              data->total_move_x += (dx > 0 ? dx : -dx);
-              data->total_move_y += (dy > 0 ? dy : -dy);
-
-              if (dx != 0 || dy != 0) {
-                /* Direct proxy: moving up on touchpad moves cursor up */
-                input_report_rel(dev, INPUT_REL_X, dx, false, K_NO_WAIT);
-                input_report_rel(dev, INPUT_REL_Y, -dy, true, K_NO_WAIT);
-              }
-            }
-          } else {
-            data->touch_start_time = k_uptime_get();
-            data->total_move_x = 0;
-            data->total_move_y = 0;
-          }
-          data->prev_x0 = x0;
-          data->prev_y0 = y0;
-          data->prev_touching = true;
-        } else {
-          /* Release event: check tap-to-click */
-          if (data->prev_touching) {
-            int64_t duration = k_uptime_get() - data->touch_start_time;
-            if (duration < TAP_MAX_DURATION_MS &&
-                data->total_move_x < TAP_MAX_MOVE &&
-                data->total_move_y < TAP_MAX_MOVE) {
-              input_report_key(dev, INPUT_BTN_LEFT, 1, true, K_NO_WAIT);
-              k_work_schedule(&data->tap_release_work, K_MSEC(20));
-            }
-          }
-          data->prev_touching = false;
-        }
-      }
-    } else if (report_id == SYNAPTICS_REPORT_MOUSE) {
-      bool btn = (buf[3] & 0x01) != 0;
-      if (btn != data->prev_btn_left) {
-        data->prev_btn_left = btn;
-        input_report_key(dev, INPUT_BTN_LEFT, btn ? 1 : 0, true, K_NO_WAIT);
       }
     }
-
-    /* Drain complete if INT is high */
-    if (gpio_pin_get_dt(&config->irq_gpio) != 0) {
-      break;
+  } else if (report_id == SYNAPTICS_REPORT_MOUSE) {
+    bool btn = (buf[3] & 0x01) != 0;
+    if (btn != data->prev_btn_left) {
+      data->prev_btn_left = btn;
+      input_report_key(dev, INPUT_BTN_LEFT, btn ? 1 : 0, true, K_NO_WAIT);
     }
+  }
+
+  /* CONTINUOUS STREAMING:
+   * Keep polling at ~125 Hz (every 8 ms) while fingers touch or while INT is asserted.
+   * This guarantees unbroken, jitter-free cursor tracking.
+   */
+  if (data->prev_touching || data->prev_two_finger || gpio_pin_get_dt(&config->irq_gpio) == 0) {
+    k_work_schedule(&data->work, K_MSEC(8));
   }
 }
 
@@ -180,7 +185,7 @@ static void synaptics_gpio_callback(const struct device *port,
                                     gpio_port_pins_t pins) {
   struct synaptics_data *data =
       CONTAINER_OF(cb, struct synaptics_data, gpio_cb);
-  k_work_submit(&data->work);
+  k_work_schedule(&data->work, K_NO_WAIT);
 }
 
 static void synaptics_heartbeat_handler(struct k_work *work) {
@@ -298,9 +303,9 @@ static void synaptics_delayed_init_handler(struct k_work *work) {
   k_msleep(50);
   i2c_read(config->i2c.bus, flush_buf, sizeof(flush_buf), data->active_addr);
 
-  /* Step 4: Attach falling-edge interrupt */
+  /* Step 4: Attach active-edge interrupt */
   ret =
-      gpio_pin_interrupt_configure_dt(&config->irq_gpio, GPIO_INT_EDGE_FALLING);
+      gpio_pin_interrupt_configure_dt(&config->irq_gpio, GPIO_INT_EDGE_TO_ACTIVE);
   if (ret < 0) {
     LOG_ERR("Failed to configure interrupt: %d", ret);
     return;
@@ -316,7 +321,7 @@ static void synaptics_delayed_init_handler(struct k_work *work) {
 
   /* Process any initial packet if INT line is already low */
   if (gpio_pin_get_dt(&config->irq_gpio) == 0) {
-    k_work_submit(&data->work);
+    k_work_schedule(&data->work, K_NO_WAIT);
   }
 
   LOG_INF("Synaptics TM-P3125 initialized successfully with I2C address 0x%02X!",
@@ -331,7 +336,7 @@ static int synaptics_init(const struct device *dev) {
   struct synaptics_data *data = dev->data;
 
   data->dev = dev;
-  k_work_init(&data->work, synaptics_work_handler);
+  k_work_init_delayable(&data->work, synaptics_work_handler);
   k_work_init_delayable(&data->init_work, synaptics_delayed_init_handler);
   k_work_init_delayable(&data->heartbeat_work, synaptics_heartbeat_handler);
   k_work_init_delayable(&data->tap_release_work, synaptics_tap_release_handler);
