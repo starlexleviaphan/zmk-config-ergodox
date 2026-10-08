@@ -19,7 +19,7 @@ LOG_MODULE_REGISTER(synaptics_tm_p3125, LOG_LEVEL_INF);
 
 #define TAP_MAX_DURATION_MS 400
 #define TAP_MAX_MOVE 350
-#define SCROLL_THRESHOLD 8
+#define SCROLL_THRESHOLD 40
 
 struct synaptics_config {
   struct i2c_dt_spec i2c;
@@ -81,8 +81,8 @@ static void synaptics_work_handler(struct k_work *work) {
   const struct device *dev = data->dev;
   const struct synaptics_config *config = dev->config;
 
-  /* Always keep the 125 Hz loop running */
-  k_work_schedule(&data->work, K_MSEC(8));
+  /* Always keep the 250 Hz loop running */
+  k_work_schedule(&data->work, K_MSEC(4));
 
   int16_t acc_dx = 0;
   int16_t acc_dy = 0;
@@ -361,8 +361,8 @@ static void synaptics_delayed_init_handler(struct k_work *work) {
     return;
   }
 
-  /* Start continuous 125 Hz polling loop */
-  k_work_schedule(&data->work, K_MSEC(10));
+  /* Start continuous 250 Hz polling loop */
+  k_work_schedule(&data->work, K_MSEC(4));
 
   LOG_INF("Synaptics TM-P3125 initialized successfully with I2C address 0x%02X!",
           data->active_addr);
