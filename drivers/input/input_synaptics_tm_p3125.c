@@ -12,13 +12,13 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 
-LOG_MODULE_REGISTER(synaptics_tm_p3125, LOG_LEVEL_DBG);
+LOG_MODULE_REGISTER(synaptics_tm_p3125, LOG_LEVEL_INF);
 
 #define SYNAPTICS_REPORT_TOUCH 0x03
 #define SYNAPTICS_REPORT_MOUSE 0x02
 
-#define TAP_MAX_DURATION_MS 350
-#define TAP_MAX_MOVE 80
+#define TAP_MAX_DURATION_MS 400
+#define TAP_MAX_MOVE 350
 #define SCROLL_THRESHOLD 8
 
 struct synaptics_config {
@@ -33,8 +33,9 @@ struct synaptics_data {
   struct k_work_delayable heartbeat_work;
   struct gpio_callback gpio_cb;
 
-  /* Tap release work */
+  /* Tap release works */
   struct k_work_delayable tap_release_work;
+  struct k_work_delayable tap_right_release_work;
 
   /* 1-Finger tracking */
   bool prev_touching;
@@ -46,9 +47,11 @@ struct synaptics_data {
   int16_t total_move_x;
   int16_t total_move_y;
 
-  /* 2-Finger scroll tracking */
+  /* 2-Finger scroll & tap tracking */
   bool prev_two_finger;
   uint16_t prev_scroll_y;
+  int64_t two_finger_start_time;
+  bool two_finger_scrolled;
 
   /* Physical clickpad button */
   bool prev_btn_left;
@@ -62,6 +65,13 @@ static void synaptics_tap_release_handler(struct k_work *work) {
   struct synaptics_data *data =
       CONTAINER_OF(dwork, struct synaptics_data, tap_release_work);
   input_report_key(data->dev, INPUT_BTN_LEFT, 0, true, K_NO_WAIT);
+}
+
+static void synaptics_tap_right_release_handler(struct k_work *work) {
+  struct k_work_delayable *dwork = k_work_delayable_from_work(work);
+  struct synaptics_data *data =
+      CONTAINER_OF(dwork, struct synaptics_data, tap_right_release_work);
+  input_report_key(data->dev, INPUT_BTN_RIGHT, 0, true, K_NO_WAIT);
 }
 
 static void synaptics_work_handler(struct k_work *work) {
@@ -122,19 +132,33 @@ static void synaptics_work_handler(struct k_work *work) {
             LOG_INF("SCROLL UP: dy=%d", scroll_dy);
             input_report_rel(dev, INPUT_REL_WHEEL, 1, true, K_NO_WAIT);
             data->prev_scroll_y = avg_y;
+            data->two_finger_scrolled = true;
           } else if (scroll_dy < -SCROLL_THRESHOLD) {
             LOG_INF("SCROLL DOWN: dy=%d", scroll_dy);
             input_report_rel(dev, INPUT_REL_WHEEL, -1, true, K_NO_WAIT);
             data->prev_scroll_y = avg_y;
+            data->two_finger_scrolled = true;
           }
         } else {
           LOG_INF("2-FINGER DETECTED: slot0_y=%u slot1_y=%u (status1=0x%02X)", y0, y1, status1);
           data->prev_scroll_y = avg_y;
+          data->two_finger_start_time = k_uptime_get();
+          data->two_finger_scrolled = false;
           data->prev_two_finger = true;
         }
         data->prev_touching = false;
       } else {
-        data->prev_two_finger = false;
+        /* If transitioning out of 2-finger touch without scrolling, trigger Right Click */
+        if (data->prev_two_finger) {
+          int64_t dur2 = k_uptime_get() - data->two_finger_start_time;
+          LOG_INF("2-FINGER RELEASE: dur=%lld ms scrolled=%d", dur2, data->two_finger_scrolled);
+          if (!data->two_finger_scrolled && dur2 < TAP_MAX_DURATION_MS) {
+            LOG_INF(">>> 2-FINGER TAP DETECTED! Sending BTN_RIGHT <<<");
+            input_report_key(dev, INPUT_BTN_RIGHT, 1, true, K_NO_WAIT);
+            k_work_schedule(&data->tap_right_release_work, K_MSEC(50));
+          }
+          data->prev_two_finger = false;
+        }
 
         if (tip0) {
           if (data->prev_touching) {
@@ -142,7 +166,7 @@ static void synaptics_work_handler(struct k_work *work) {
             int16_t dy = (int16_t)y0 - (int16_t)data->prev_y0;
 
             /* Filter out abnormal jumps on boundary transitions */
-            if (dx > -300 && dx < 300 && dy > -300 && dy < 300) {
+            if (dx > -400 && dx < 400 && dy > -400 && dy < 400) {
               data->total_move_x += (dx > 0 ? dx : -dx);
               data->total_move_y += (dy > 0 ? dy : -dy);
 
@@ -164,7 +188,7 @@ static void synaptics_work_handler(struct k_work *work) {
           /* Release event: check tap-to-click */
           if (data->prev_touching) {
             int64_t duration = k_uptime_get() - data->touch_start_time;
-            LOG_DBG("RELEASE: dur=%lld ms move_x=%d move_y=%d", duration, data->total_move_x, data->total_move_y);
+            LOG_INF("RELEASE: dur=%lld ms move_x=%d move_y=%d", duration, data->total_move_x, data->total_move_y);
             if (duration < TAP_MAX_DURATION_MS &&
                 data->total_move_x < TAP_MAX_MOVE &&
                 data->total_move_y < TAP_MAX_MOVE) {
@@ -353,6 +377,7 @@ static int synaptics_init(const struct device *dev) {
   k_work_init_delayable(&data->init_work, synaptics_delayed_init_handler);
   k_work_init_delayable(&data->heartbeat_work, synaptics_heartbeat_handler);
   k_work_init_delayable(&data->tap_release_work, synaptics_tap_release_handler);
+  k_work_init_delayable(&data->tap_right_release_work, synaptics_tap_right_release_handler);
 
   if (!i2c_is_ready_dt(&config->i2c)) {
     LOG_ERR("I2C bus not ready");
