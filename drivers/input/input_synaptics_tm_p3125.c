@@ -51,6 +51,7 @@ struct synaptics_data {
   bool prev_two_finger;
   uint16_t prev_scroll_y;
   int64_t two_finger_start_time;
+  int64_t two_finger_release_time;
   bool two_finger_scrolled;
 
   /* Physical clickpad button */
@@ -158,9 +159,10 @@ static void synaptics_work_handler(struct k_work *work) {
             k_work_schedule(&data->tap_right_release_work, K_MSEC(50));
           }
           data->prev_two_finger = false;
+          data->two_finger_release_time = k_uptime_get();
         }
 
-        if (tip0) {
+        if (tip0 && (k_uptime_get() - data->two_finger_release_time >= 150)) {
           if (data->prev_touching) {
             int16_t dx = (int16_t)x0 - (int16_t)data->prev_x0;
             int16_t dy = (int16_t)y0 - (int16_t)data->prev_y0;
