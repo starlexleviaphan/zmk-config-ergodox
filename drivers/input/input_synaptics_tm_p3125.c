@@ -17,9 +17,19 @@ LOG_MODULE_REGISTER(synaptics_tm_p3125, LOG_LEVEL_INF);
 #define SYNAPTICS_REPORT_TOUCH 0x03
 #define SYNAPTICS_REPORT_MOUSE 0x02
 
-#define TAP_MAX_DURATION_MS 400
-#define TAP_MAX_MOVE 350
-#define SCROLL_THRESHOLD 40
+/* Precision tap & drag timings (libinput & Windows PTP standard) */
+#define TAP_MAX_DURATION_MS 220
+#define TAP_MAX_MOVE 60
+#define TAP_DRAG_TIMEOUT_MS 280
+#define DRAG_LOCK_TIMEOUT_MS 320
+
+/* Scroll & gesture thresholds */
+#define SCROLL_THRESHOLD 35
+#define THREE_FINGER_SWIPE_THRESHOLD 110
+
+/* Palm rejection: edge exclusion margin (Sensor X range: 0..1219) */
+#define PALM_EDGE_LEFT 70
+#define PALM_EDGE_RIGHT 1150
 
 struct synaptics_config {
   struct i2c_dt_spec i2c;
@@ -36,36 +46,52 @@ struct synaptics_data {
   /* Tap release works */
   struct k_work_delayable tap_release_work;
   struct k_work_delayable tap_right_release_work;
+  struct k_work_delayable tap_middle_release_work;
+  struct k_work_delayable drag_lock_work;
+  struct k_work_delayable inertial_scroll_work;
 
-  /* 1-Finger tracking */
+  /* Active I2C address */
+  uint16_t active_addr;
+
+  /* 1-Finger tracking & Ballistics */
   bool prev_touching;
   uint16_t prev_x0;
   uint16_t prev_y0;
-
-  /* Tap tracking */
   int64_t touch_start_time;
   int16_t total_move_x;
   int16_t total_move_y;
 
-  /* 2-Finger scroll & tap tracking */
+  /* Tap and Drag state machine */
+  int64_t last_tap_release_time;
+  bool is_tap_dragging;
+
+  /* 2-Finger scroll & Inertia tracking */
   bool prev_two_finger;
+  uint16_t prev_scroll_x;
   uint16_t prev_scroll_y;
   int64_t two_finger_start_time;
   int64_t two_finger_release_time;
   bool two_finger_scrolled;
+  int16_t last_scroll_dy;
+  int16_t inertial_dy;
+
+  /* 3-Finger gesture tracking */
+  bool prev_three_finger;
+  int64_t three_finger_start_time;
+  uint16_t three_finger_start_y;
+  bool three_finger_swiped;
 
   /* Physical clickpad button */
   bool prev_btn_left;
-
-  /* Active I2C address */
-  uint16_t active_addr;
 };
 
 static void synaptics_tap_release_handler(struct k_work *work) {
   struct k_work_delayable *dwork = k_work_delayable_from_work(work);
   struct synaptics_data *data =
       CONTAINER_OF(dwork, struct synaptics_data, tap_release_work);
-  input_report_key(data->dev, INPUT_BTN_LEFT, 0, true, K_NO_WAIT);
+  if (!data->is_tap_dragging) {
+    input_report_key(data->dev, INPUT_BTN_LEFT, 0, true, K_NO_WAIT);
+  }
 }
 
 static void synaptics_tap_right_release_handler(struct k_work *work) {
@@ -75,30 +101,63 @@ static void synaptics_tap_right_release_handler(struct k_work *work) {
   input_report_key(data->dev, INPUT_BTN_RIGHT, 0, true, K_NO_WAIT);
 }
 
+static void synaptics_tap_middle_release_handler(struct k_work *work) {
+  struct k_work_delayable *dwork = k_work_delayable_from_work(work);
+  struct synaptics_data *data =
+      CONTAINER_OF(dwork, struct synaptics_data, tap_middle_release_work);
+  input_report_key(data->dev, INPUT_BTN_MIDDLE, 0, true, K_NO_WAIT);
+}
+
+static void synaptics_drag_lock_handler(struct k_work *work) {
+  struct k_work_delayable *dwork = k_work_delayable_from_work(work);
+  struct synaptics_data *data =
+      CONTAINER_OF(dwork, struct synaptics_data, drag_lock_work);
+  if (data->is_tap_dragging) {
+    data->is_tap_dragging = false;
+    input_report_key(data->dev, INPUT_BTN_LEFT, 0, true, K_NO_WAIT);
+  }
+}
+
+static void synaptics_inertial_scroll_handler(struct k_work *work) {
+  struct k_work_delayable *dwork = k_work_delayable_from_work(work);
+  struct synaptics_data *data =
+      CONTAINER_OF(dwork, struct synaptics_data, inertial_scroll_work);
+
+  if (data->inertial_dy != 0) {
+    int dir = (data->inertial_dy > 0) ? 1 : -1;
+    input_report_rel(data->dev, INPUT_REL_WHEEL, dir, true, K_NO_WAIT);
+
+    /* Exponential decay (decay factor 0.8) */
+    data->inertial_dy = (data->inertial_dy * 8) / 10;
+    if (data->inertial_dy > 1 || data->inertial_dy < -1) {
+      k_work_schedule(&data->inertial_scroll_work, K_MSEC(25));
+    } else {
+      data->inertial_dy = 0;
+    }
+  }
+}
+
 static void synaptics_work_handler(struct k_work *work) {
   struct k_work_delayable *dwork = k_work_delayable_from_work(work);
   struct synaptics_data *data = CONTAINER_OF(dwork, struct synaptics_data, work);
   const struct device *dev = data->dev;
   const struct synaptics_config *config = dev->config;
 
-  /* Always keep the 250 Hz loop running */
-  k_work_schedule(&data->work, K_MSEC(4));
-
   int16_t acc_dx = 0;
   int16_t acc_dy = 0;
   bool has_rel = false;
 
-  /* Read all pending packets from FIFO while INT is asserted */
+  /* Read all pending packets while INT is asserted (active-low GPIO returns > 0) */
   for (int iter = 0; iter < 10; iter++) {
     int pin_active = gpio_pin_get_dt(&config->irq_gpio);
     if (pin_active <= 0) {
       break;
     }
 
-    uint8_t buf[60];
+    /* Fast 32-byte read: covers Report ID, 3 finger slots, contact count, and buttons */
+    uint8_t buf[32];
     int ret = i2c_read(config->i2c.bus, buf, sizeof(buf), data->active_addr);
     if (ret < 0) {
-      LOG_WRN("Touchpad I2C read error: %d", ret);
       break;
     }
 
@@ -107,6 +166,7 @@ static void synaptics_work_handler(struct k_work *work) {
     if (report_id == SYNAPTICS_REPORT_TOUCH) {
       /* Slot 0 (Finger 1) */
       uint8_t status0 = buf[3];
+      bool confidence0 = (status0 & 0x01) != 0;
       bool tip0 = (status0 & 0x02) != 0;
       uint16_t x0 = (uint16_t)(buf[4] | (buf[5] << 8));
       uint16_t y0 = (uint16_t)(buf[6] | (buf[7] << 8));
@@ -114,89 +174,223 @@ static void synaptics_work_handler(struct k_work *work) {
       /* Slot 1 (Finger 2) */
       uint8_t status1 = buf[8];
       bool tip1 = (status1 & 0x02) != 0;
+      uint16_t x1 = (uint16_t)(buf[9] | (buf[10] << 8));
       uint16_t y1 = (uint16_t)(buf[11] | (buf[12] << 8));
 
-      /* Physical button on clickpad */
+      /* Slot 2 (Finger 3) & contact count */
+      uint8_t status2 = buf[13];
+      bool tip2 = (status2 & 0x02) != 0;
+      uint16_t y2 = (uint16_t)(buf[16] | (buf[17] << 8));
+      uint8_t contact_count = buf[30];
+
+      /* Physical clickpad button */
       bool physical_btn = (buf[31] & 0x01) != 0;
       if (physical_btn != data->prev_btn_left) {
         data->prev_btn_left = physical_btn;
-        input_report_key(dev, INPUT_BTN_LEFT, physical_btn ? 1 : 0, true,
-                         K_NO_WAIT);
+        input_report_key(dev, INPUT_BTN_LEFT, physical_btn ? 1 : 0, true, K_NO_WAIT);
       }
 
-      /* Gestures: 2-finger scroll vs 1-finger cursor */
-      if (tip0 && tip1) {
+      bool is_three_finger = (tip0 && tip1 && tip2) || (contact_count >= 3);
+
+      /* ========================================================================= */
+      /* BRANCH A: 3-FINGER MULTITOUCH (Middle click tap & Window navigation)      */
+      /* ========================================================================= */
+      if (is_three_finger) {
+        /* Cancel ongoing 1-finger and 2-finger gestures */
+        data->prev_touching = false;
+        data->prev_two_finger = false;
+        data->inertial_dy = 0;
+
+        uint16_t avg3_y = (y0 + y1 + y2) / 3;
+
+        if (data->prev_three_finger) {
+          int16_t swipe_dy = (int16_t)avg3_y - (int16_t)data->three_finger_start_y;
+          if (!data->three_finger_swiped) {
+            if (swipe_dy > THREE_FINGER_SWIPE_THRESHOLD) {
+              /* Swipe Up: Task View (Win+Tab) */
+              input_report_key(dev, INPUT_BTN_FORWARD, 1, true, K_NO_WAIT);
+              input_report_key(dev, INPUT_BTN_FORWARD, 0, true, K_NO_WAIT);
+              data->three_finger_swiped = true;
+            } else if (swipe_dy < -THREE_FINGER_SWIPE_THRESHOLD) {
+              /* Swipe Down: Show Desktop (Win+D) */
+              input_report_key(dev, INPUT_BTN_BACK, 1, true, K_NO_WAIT);
+              input_report_key(dev, INPUT_BTN_BACK, 0, true, K_NO_WAIT);
+              data->three_finger_swiped = true;
+            }
+          }
+        } else {
+          data->three_finger_start_time = k_uptime_get();
+          data->three_finger_start_y = avg3_y;
+          data->three_finger_swiped = false;
+          data->prev_three_finger = true;
+        }
+      }
+      /* ========================================================================= */
+      /* BRANCH B: 2-FINGER MULTITOUCH (Vertical & Horizontal scroll, Right click) */
+      /* ========================================================================= */
+      else if (tip0 && tip1) {
+        /* Transition out of 3-finger */
+        if (data->prev_three_finger) {
+          int64_t dur3 = k_uptime_get() - data->three_finger_start_time;
+          if (!data->three_finger_swiped && dur3 < TAP_MAX_DURATION_MS) {
+            /* 3-Finger Tap: Middle Click */
+            input_report_key(dev, INPUT_BTN_MIDDLE, 1, true, K_NO_WAIT);
+            k_work_schedule(&data->tap_middle_release_work, K_MSEC(40));
+          }
+          data->prev_three_finger = false;
+        }
+
+        data->prev_touching = false;
+        data->inertial_dy = 0;
+
         uint16_t avg_y = (y0 + y1) / 2;
+        uint16_t avg_x = (x0 + x1) / 2;
+
         if (data->prev_two_finger) {
           int16_t scroll_dy = (int16_t)avg_y - (int16_t)data->prev_scroll_y;
+          int16_t scroll_dx = (int16_t)avg_x - (int16_t)data->prev_scroll_x;
+
           if (scroll_dy > SCROLL_THRESHOLD) {
-            LOG_INF("SCROLL UP: dy=%d", scroll_dy);
             input_report_rel(dev, INPUT_REL_WHEEL, 1, true, K_NO_WAIT);
             data->prev_scroll_y = avg_y;
+            data->last_scroll_dy = scroll_dy;
             data->two_finger_scrolled = true;
           } else if (scroll_dy < -SCROLL_THRESHOLD) {
-            LOG_INF("SCROLL DOWN: dy=%d", scroll_dy);
             input_report_rel(dev, INPUT_REL_WHEEL, -1, true, K_NO_WAIT);
             data->prev_scroll_y = avg_y;
+            data->last_scroll_dy = scroll_dy;
+            data->two_finger_scrolled = true;
+          }
+
+          if (scroll_dx > SCROLL_THRESHOLD) {
+            input_report_rel(dev, INPUT_REL_HWHEEL, 1, true, K_NO_WAIT);
+            data->prev_scroll_x = avg_x;
+            data->two_finger_scrolled = true;
+          } else if (scroll_dx < -SCROLL_THRESHOLD) {
+            input_report_rel(dev, INPUT_REL_HWHEEL, -1, true, K_NO_WAIT);
+            data->prev_scroll_x = avg_x;
             data->two_finger_scrolled = true;
           }
         } else {
-          LOG_INF("2-FINGER DETECTED: slot0_y=%u slot1_y=%u (status1=0x%02X)", y0, y1, status1);
           data->prev_scroll_y = avg_y;
+          data->prev_scroll_x = avg_x;
           data->two_finger_start_time = k_uptime_get();
           data->two_finger_scrolled = false;
+          data->last_scroll_dy = 0;
           data->prev_two_finger = true;
         }
-        data->prev_touching = false;
-      } else {
-        /* If transitioning out of 2-finger touch without scrolling, trigger Right Click */
+      }
+      /* ========================================================================= */
+      /* BRANCH C: 1-FINGER (Cursor ballistics, Tap-to-Click, Tap-and-Drag)        */
+      /* ========================================================================= */
+      else {
+        /* Transition out of 3-finger */
+        if (data->prev_three_finger) {
+          int64_t dur3 = k_uptime_get() - data->three_finger_start_time;
+          if (!data->three_finger_swiped && dur3 < TAP_MAX_DURATION_MS) {
+            input_report_key(dev, INPUT_BTN_MIDDLE, 1, true, K_NO_WAIT);
+            k_work_schedule(&data->tap_middle_release_work, K_MSEC(40));
+          }
+          data->prev_three_finger = false;
+        }
+
+        /* Transition out of 2-finger */
         if (data->prev_two_finger) {
           int64_t dur2 = k_uptime_get() - data->two_finger_start_time;
-          LOG_INF("2-FINGER RELEASE: dur=%lld ms scrolled=%d", dur2, data->two_finger_scrolled);
           if (!data->two_finger_scrolled && dur2 < TAP_MAX_DURATION_MS) {
-            LOG_INF(">>> 2-FINGER TAP DETECTED! Sending BTN_RIGHT <<<");
+            /* 2-Finger Tap: Right Click */
             input_report_key(dev, INPUT_BTN_RIGHT, 1, true, K_NO_WAIT);
             k_work_schedule(&data->tap_right_release_work, K_MSEC(50));
+          } else if (data->two_finger_scrolled && (data->last_scroll_dy > 45 || data->last_scroll_dy < -45)) {
+            /* Kinetic scroll momentum */
+            data->inertial_dy = data->last_scroll_dy / 2;
+            k_work_schedule(&data->inertial_scroll_work, K_MSEC(25));
           }
           data->prev_two_finger = false;
           data->two_finger_release_time = k_uptime_get();
         }
 
-        if (tip0 && (k_uptime_get() - data->two_finger_release_time >= 150)) {
+        /* Palm rejection: require confidence or active dragging */
+        bool valid_finger = tip0 && (confidence0 || data->is_tap_dragging);
+
+        /* Edge palm exclusion on new touch */
+        if (valid_finger && !data->prev_touching && !data->is_tap_dragging) {
+          if (x0 < PALM_EDGE_LEFT || x0 > PALM_EDGE_RIGHT) {
+            valid_finger = false;
+          }
+        }
+
+        if (valid_finger && (k_uptime_get() - data->two_finger_release_time >= 120)) {
+          /* Stop inertial scroll immediately upon touch */
+          data->inertial_dy = 0;
+
           if (data->prev_touching) {
             int16_t dx = (int16_t)x0 - (int16_t)data->prev_x0;
             int16_t dy = (int16_t)y0 - (int16_t)data->prev_y0;
 
-            /* Filter out abnormal jumps on boundary transitions */
             if (dx > -400 && dx < 400 && dy > -400 && dy < 400) {
               data->total_move_x += (dx > 0 ? dx : -dx);
               data->total_move_y += (dy > 0 ? dy : -dy);
 
-              acc_dx += dx;
-              acc_dy += dy;
+              /* Fast fixed-point Pointer Ballistics (Non-linear acceleration) */
+              int32_t adx = dx > 0 ? dx : -dx;
+              int32_t ady = dy > 0 ? dy : -dy;
+              int32_t speed = (adx > ady) ? (adx + (ady >> 1)) : (ady + (adx >> 1));
+
+              int16_t b_dx = dx;
+              int16_t b_dy = dy;
+
+              if (speed < 4) {
+                /* Micro-precision (0.7x) */
+                b_dx = (dx * 7) / 10;
+                b_dy = (dy * 7) / 10;
+              } else if (speed >= 14) {
+                /* Fast acceleration flick (2.2x) */
+                b_dx = (dx * 22) / 10;
+                b_dy = (dy * 22) / 10;
+              }
+
+              acc_dx += b_dx;
+              acc_dy += b_dy;
               has_rel = true;
-            } else {
-              LOG_WRN("Delta jump filtered out: dx=%d dy=%d", dx, dy);
             }
           } else {
-            data->touch_start_time = k_uptime_get();
+            /* Touch Down */
+            int64_t now = k_uptime_get();
+            data->touch_start_time = now;
             data->total_move_x = 0;
             data->total_move_y = 0;
+
+            /* Check Tap-and-Drag double tap condition */
+            if ((now - data->last_tap_release_time) < TAP_DRAG_TIMEOUT_MS) {
+              data->is_tap_dragging = true;
+              k_work_cancel_delayable(&data->tap_release_work);
+              k_work_cancel_delayable(&data->drag_lock_work);
+              input_report_key(dev, INPUT_BTN_LEFT, 1, true, K_NO_WAIT);
+            } else if (data->is_tap_dragging) {
+              /* Re-touched during Drag Lock period: continue dragging */
+              k_work_cancel_delayable(&data->drag_lock_work);
+            }
           }
+
           data->prev_x0 = x0;
           data->prev_y0 = y0;
           data->prev_touching = true;
         } else {
-          /* Release event: check tap-to-click */
+          /* Release event */
           if (data->prev_touching) {
             int64_t duration = k_uptime_get() - data->touch_start_time;
-            LOG_INF("RELEASE: dur=%lld ms move_x=%d move_y=%d", duration, data->total_move_x, data->total_move_y);
-            if (duration < TAP_MAX_DURATION_MS &&
-                data->total_move_x < TAP_MAX_MOVE &&
-                data->total_move_y < TAP_MAX_MOVE) {
-              LOG_INF(">>> TAP CLICK DETECTED! Sending BTN_LEFT <<<");
+
+            if (data->is_tap_dragging) {
+              /* Drag Lock: keep BTN_LEFT held for 320ms to allow finger re-positioning */
+              k_work_schedule(&data->drag_lock_work, K_MSEC(DRAG_LOCK_TIMEOUT_MS));
+            } else if (duration < TAP_MAX_DURATION_MS &&
+                       data->total_move_x < TAP_MAX_MOVE &&
+                       data->total_move_y < TAP_MAX_MOVE) {
+              /* Single Tap: Click */
               input_report_key(dev, INPUT_BTN_LEFT, 1, true, K_NO_WAIT);
-              k_work_schedule(&data->tap_release_work, K_MSEC(50));
+              k_work_schedule(&data->tap_release_work, K_MSEC(40));
+              data->last_tap_release_time = k_uptime_get();
             }
           }
           data->prev_touching = false;
@@ -209,13 +403,18 @@ static void synaptics_work_handler(struct k_work *work) {
         input_report_key(dev, INPUT_BTN_LEFT, btn ? 1 : 0, true, K_NO_WAIT);
       }
     }
-  } /* End for */
+  } /* End FIFO loop */
 
-  /* Emit aggregated movement across all drained packets in a single radio frame */
+  /* Emit aggregated movement across drained packets */
   if (has_rel && (acc_dx != 0 || acc_dy != 0)) {
-    LOG_DBG("REL: acc_dx=%d acc_dy=%d", acc_dx, acc_dy);
     input_report_rel(dev, INPUT_REL_X, acc_dx, false, K_NO_WAIT);
     input_report_rel(dev, INPUT_REL_Y, acc_dy, true, K_NO_WAIT);
+  }
+
+  /* Polling management: poll fast while fingers are active; sleep when released */
+  if (data->prev_touching || data->prev_two_finger || data->prev_three_finger ||
+      data->is_tap_dragging || data->inertial_dy != 0) {
+    k_work_schedule(&data->work, K_MSEC(4));
   }
 }
 
@@ -234,14 +433,7 @@ static void synaptics_heartbeat_handler(struct k_work *work) {
   struct k_work_delayable *dwork = k_work_delayable_from_work(work);
   struct synaptics_data *data =
       CONTAINER_OF(dwork, struct synaptics_data, heartbeat_work);
-  const struct device *dev = data->dev;
-  const struct synaptics_config *config = dev->config;
-
-  int int_val = gpio_pin_get_dt(&config->irq_gpio);
-  LOG_INF("[Touchpad Heartbeat] Active I2C=0x%02X | INT pin raw state = %d",
-          data->active_addr, int_val);
-
-  k_work_schedule(&data->heartbeat_work, K_SECONDS(3));
+  k_work_schedule(&data->heartbeat_work, K_SECONDS(10));
 }
 
 static void synaptics_delayed_init_handler(struct k_work *work) {
@@ -251,123 +443,61 @@ static void synaptics_delayed_init_handler(struct k_work *work) {
   const struct device *dev = data->dev;
   const struct synaptics_config *config = dev->config;
 
-  LOG_INF("==================================================");
-  LOG_INF("=== Initializing Synaptics TM-P3125 Touchpad ===");
-  LOG_INF("==================================================");
-
-  if (!i2c_is_ready_dt(&config->i2c)) {
-    LOG_ERR("I2C bus not ready");
-    return -ENODEV;
+  if (!i2c_is_ready_dt(&config->i2c) || !gpio_is_ready_dt(&config->irq_gpio)) {
+    LOG_ERR("I2C or IRQ GPIO not ready");
+    return;
   }
 
-  if (!gpio_is_ready_dt(&config->irq_gpio)) {
-    LOG_ERR("IRQ GPIO not ready");
-    return -ENODEV;
-  }
-
-  /* Configure INT line as input with internal pull-up */
-  /* Scan I2C bus to check hardware connectivity */
-  LOG_INF("Current INT pin raw state: %d", gpio_pin_get_dt(&config->irq_gpio));
-
-  /* Step 1: Probe confirmed hardware address 0x2C directly */
+  /* Step 1: Probe hardware address 0x2C directly */
   uint16_t target_addr = 0;
   uint8_t pwr_cmd[] = {0x22, 0x00, 0x00, 0x08};
-  LOG_INF("Probing Touchpad Power On on address 0x2C...");
   for (int retry = 0; retry < 5; retry++) {
     int ret = i2c_write(config->i2c.bus, pwr_cmd, sizeof(pwr_cmd), 0x2C);
     if (ret == 0) {
-      LOG_INF(">>> TOUCHPAD CONFIRMED AND ACKED ON ADDRESS 0x2C! <<<");
       target_addr = 0x2C;
       break;
     }
     k_msleep(30);
   }
 
-  /* Fallback scan if 0x2C did not ACK */
-  if (target_addr == 0) {
-    LOG_WRN("0x2C did not respond immediately, scanning I2C bus (0x08..0x77)...");
-    for (uint8_t addr = 0x08; addr <= 0x77; addr++) {
-      uint8_t dummy = 0;
-      if (i2c_write(config->i2c.bus, &dummy, 1, addr) == 0) {
-        LOG_INF("Found responsive device at 0x%02X, testing Power On...", addr);
-        if (i2c_write(config->i2c.bus, pwr_cmd, sizeof(pwr_cmd), addr) == 0) {
-          LOG_INF(">>> TOUCHPAD CONFIRMED ON 0x%02X! <<<", addr);
-          target_addr = addr;
-          break;
-        }
-      }
-    }
-  }
-
   if (target_addr == 0) {
     target_addr = 0x2C;
-    LOG_WRN("No device ACKed, defaulting to 0x2C");
   }
-
   data->active_addr = target_addr;
-  LOG_INF("Active Touchpad I2C Address set to: 0x%02X", data->active_addr);
 
   k_msleep(50);
 
   /* Step 2: Software Reset command (Reg 0x0022, Opcode 0x01) */
   uint8_t reset_cmd[] = {0x22, 0x00, 0x00, 0x01};
-  int ret = i2c_write(config->i2c.bus, reset_cmd, sizeof(reset_cmd),
-                      data->active_addr);
-  if (ret < 0) {
-    LOG_WRN("Touchpad soft reset write failed: %d (addr 0x%02X)", ret,
-            data->active_addr);
-  }
+  i2c_write(config->i2c.bus, reset_cmd, sizeof(reset_cmd), data->active_addr);
 
-  /* Wait for INT to go LOW (up to 500 ms) and clear reset response */
   for (int t = 0; t < 50; t++) {
     if (gpio_pin_get_dt(&config->irq_gpio) == 0) {
-      LOG_INF("Touchpad INT active after reset (t=%d ms)", t * 10);
       break;
     }
     k_msleep(10);
   }
 
-  uint8_t flush_buf[60];
-  ret = i2c_read(config->i2c.bus, flush_buf, sizeof(flush_buf),
-                 data->active_addr);
-  if (ret < 0) {
-    LOG_WRN("Touchpad flush read failed: %d", ret);
-  }
+  uint8_t flush_buf[32];
+  i2c_read(config->i2c.bus, flush_buf, sizeof(flush_buf), data->active_addr);
   k_msleep(50);
 
   /* Step 3: Switch to PTP Mode (SET_REPORT Feature Report 4 to value 3) */
   uint8_t ptp_cmd[] = {0x22, 0x00, 0x34, 0x03, 0x23,
                        0x00, 0x04, 0x00, 0x04, 0x03};
-  ret = i2c_write(config->i2c.bus, ptp_cmd, sizeof(ptp_cmd), data->active_addr);
-  if (ret < 0) {
-    LOG_WRN("Touchpad PTP mode command failed: %d", ret);
-  }
+  i2c_write(config->i2c.bus, ptp_cmd, sizeof(ptp_cmd), data->active_addr);
   k_msleep(50);
   i2c_read(config->i2c.bus, flush_buf, sizeof(flush_buf), data->active_addr);
 
   /* Step 4: Attach active-edge interrupt */
-  ret =
-      gpio_pin_interrupt_configure_dt(&config->irq_gpio, GPIO_INT_EDGE_TO_ACTIVE);
-  if (ret < 0) {
-    LOG_ERR("Failed to configure interrupt: %d", ret);
-    return;
-  }
+  gpio_pin_interrupt_configure_dt(&config->irq_gpio, GPIO_INT_EDGE_TO_ACTIVE);
+  gpio_init_callback(&data->gpio_cb, synaptics_gpio_callback, BIT(config->irq_gpio.pin));
+  gpio_add_callback(config->irq_gpio.port, &data->gpio_cb);
 
-  gpio_init_callback(&data->gpio_cb, synaptics_gpio_callback,
-                     BIT(config->irq_gpio.pin));
-  ret = gpio_add_callback(config->irq_gpio.port, &data->gpio_cb);
-  if (ret < 0) {
-    LOG_ERR("Failed to add GPIO callback: %d", ret);
-    return;
-  }
+  /* Schedule work immediately to drain any pending state */
+  k_work_schedule(&data->work, K_NO_WAIT);
 
-  /* Start continuous 250 Hz polling loop */
-  k_work_schedule(&data->work, K_MSEC(4));
-
-  LOG_INF("Synaptics TM-P3125 initialized successfully with I2C address 0x%02X!",
-          data->active_addr);
-
-  /* Diagnostics completed */
+  LOG_INF("Synaptics TM-P3125 initialized successfully (Addr 0x%02X)", data->active_addr);
 }
 
 static int synaptics_init(const struct device *dev) {
@@ -380,26 +510,20 @@ static int synaptics_init(const struct device *dev) {
   k_work_init_delayable(&data->heartbeat_work, synaptics_heartbeat_handler);
   k_work_init_delayable(&data->tap_release_work, synaptics_tap_release_handler);
   k_work_init_delayable(&data->tap_right_release_work, synaptics_tap_right_release_handler);
+  k_work_init_delayable(&data->tap_middle_release_work, synaptics_tap_middle_release_handler);
+  k_work_init_delayable(&data->drag_lock_work, synaptics_drag_lock_handler);
+  k_work_init_delayable(&data->inertial_scroll_work, synaptics_inertial_scroll_handler);
 
-  if (!i2c_is_ready_dt(&config->i2c)) {
-    LOG_ERR("I2C bus not ready");
+  if (!i2c_is_ready_dt(&config->i2c) || !gpio_is_ready_dt(&config->irq_gpio)) {
     return -ENODEV;
   }
 
-  if (!gpio_is_ready_dt(&config->irq_gpio)) {
-    LOG_ERR("IRQ GPIO not ready");
-    return -ENODEV;
-  }
-
-  /* Configure INT line as input with internal pull-up */
   int ret = gpio_pin_configure_dt(&config->irq_gpio, GPIO_INPUT | GPIO_PULL_UP);
   if (ret < 0) {
-    LOG_ERR("Failed to configure IRQ GPIO: %d", ret);
     return ret;
   }
 
   k_work_schedule(&data->init_work, K_MSEC(3500));
-
   return 0;
 }
 

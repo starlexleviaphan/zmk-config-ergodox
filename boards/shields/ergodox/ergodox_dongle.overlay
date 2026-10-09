@@ -1,5 +1,6 @@
 #include "ergodox.dtsi"
 #include <input/processors.dtsi>
+#include <dt-bindings/zmk/keys.h>
 #include <dt-bindings/zmk/mouse.h>
 #include <zephyr/dt-bindings/input/input-event-codes.h>
 
@@ -30,15 +31,19 @@
         compatible = "zmk,input-listener";
         device = <&touchpad_split>;
         input-processors = <&zip_button_behaviors>;
+
+        sniper_mode {
+            layers = <6>;
+            input-processors = <&zip_xy_scaler 1 2>, <&zip_button_behaviors>;
+        };
     };
 };
 
 &zip_button_behaviors {
-    codes = <INPUT_BTN_0 INPUT_BTN_1 INPUT_BTN_2 INPUT_BTN_LEFT INPUT_BTN_RIGHT>;
-    bindings = <&mkp LCLK &mkp RCLK &mkp MCLK &mkp LCLK &mkp RCLK>;
+    codes = <INPUT_BTN_0 INPUT_BTN_1 INPUT_BTN_2 INPUT_BTN_LEFT INPUT_BTN_RIGHT INPUT_BTN_MIDDLE INPUT_BTN_FORWARD INPUT_BTN_BACK>;
+    bindings = <&mkp LCLK &mkp RCLK &mkp MCLK &mkp LCLK &mkp RCLK &mkp MCLK &kp LG(TAB) &kp LG(D)>;
 };
 
 &kscan0 {
     status = "disabled";
 };
-
