@@ -40,8 +40,8 @@
 };
 
 &zip_button_behaviors {
-    codes = <INPUT_BTN_0 INPUT_BTN_1 INPUT_BTN_2 INPUT_BTN_LEFT INPUT_BTN_RIGHT INPUT_BTN_MIDDLE INPUT_BTN_EXTRA INPUT_BTN_SIDE>;
-    bindings = <&mkp LCLK &mkp RCLK &mkp MCLK &mkp LCLK &mkp RCLK &mkp MCLK &kp LG(TAB) &kp LG(D)>;
+    codes = <INPUT_BTN_0 INPUT_BTN_1 INPUT_BTN_2 INPUT_BTN_3 INPUT_BTN_4 INPUT_BTN_LEFT INPUT_BTN_RIGHT>;
+    bindings = <&mkp LCLK &mkp RCLK &mkp MCLK &kp LG(TAB) &kp LG(D) &mkp LCLK &mkp RCLK>;
 };
 
 &kscan0 {

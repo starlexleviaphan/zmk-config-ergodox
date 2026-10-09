@@ -208,14 +208,14 @@ static void synaptics_work_handler(struct k_work *work) {
           int16_t swipe_dy = (int16_t)avg3_y - (int16_t)data->three_finger_start_y;
           if (!data->three_finger_swiped) {
             if (swipe_dy > THREE_FINGER_SWIPE_THRESHOLD) {
-              /* Swipe Up: Task View (Win+Tab via INPUT_BTN_EXTRA) */
-              input_report_key(dev, INPUT_BTN_EXTRA, 1, true, K_NO_WAIT);
-              input_report_key(dev, INPUT_BTN_EXTRA, 0, true, K_NO_WAIT);
+              /* Swipe Up: Task View (Win+Tab via INPUT_BTN_3) */
+              input_report_key(dev, INPUT_BTN_3, 1, true, K_NO_WAIT);
+              input_report_key(dev, INPUT_BTN_3, 0, true, K_NO_WAIT);
               data->three_finger_swiped = true;
             } else if (swipe_dy < -THREE_FINGER_SWIPE_THRESHOLD) {
-              /* Swipe Down: Show Desktop (Win+D via INPUT_BTN_SIDE) */
-              input_report_key(dev, INPUT_BTN_SIDE, 1, true, K_NO_WAIT);
-              input_report_key(dev, INPUT_BTN_SIDE, 0, true, K_NO_WAIT);
+              /* Swipe Down: Show Desktop (Win+D via INPUT_BTN_4) */
+              input_report_key(dev, INPUT_BTN_4, 1, true, K_NO_WAIT);
+              input_report_key(dev, INPUT_BTN_4, 0, true, K_NO_WAIT);
               data->three_finger_swiped = true;
             }
           }
