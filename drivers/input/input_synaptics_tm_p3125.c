@@ -311,17 +311,11 @@ static void synaptics_work_handler(struct k_work *work) {
           data->two_finger_release_time = k_uptime_get();
         }
 
-        /* Palm rejection: require confidence or active dragging */
-        bool valid_finger = tip0 && (confidence0 || data->is_tap_dragging);
-
-        /* Edge palm exclusion on new touch */
-        if (valid_finger && !data->prev_touching && !data->is_tap_dragging) {
-          if (x0 < PALM_EDGE_LEFT || x0 > PALM_EDGE_RIGHT) {
-            valid_finger = false;
-          }
-        }
-
-        if (valid_finger && (k_uptime_get() - data->two_finger_release_time >= 120)) {
+        /* 1-Finger tracking: any physical touch (tip0) is immediately valid.
+         * Zero deadzone, no artificial edge exclusions.
+         * The slightest finger movement responds immediately with 1:1 linear tracking.
+         */
+        if (tip0 && (k_uptime_get() - data->two_finger_release_time >= 50)) {
           /* Stop inertial scroll immediately upon touch */
           data->inertial_dy = 0;
 
@@ -333,26 +327,9 @@ static void synaptics_work_handler(struct k_work *work) {
               data->total_move_x += (dx > 0 ? dx : -dx);
               data->total_move_y += (dy > 0 ? dy : -dy);
 
-              /* Fast fixed-point Pointer Ballistics (Non-linear acceleration) */
-              int32_t adx = dx > 0 ? dx : -dx;
-              int32_t ady = dy > 0 ? dy : -dy;
-              int32_t speed = (adx > ady) ? (adx + (ady >> 1)) : (ady + (adx >> 1));
-
-              int16_t b_dx = dx;
-              int16_t b_dy = dy;
-
-              if (speed < 4) {
-                /* Micro-precision (0.7x) */
-                b_dx = (dx * 7) / 10;
-                b_dy = (dy * 7) / 10;
-              } else if (speed >= 14) {
-                /* Fast acceleration flick (2.2x) */
-                b_dx = (dx * 22) / 10;
-                b_dy = (dy * 22) / 10;
-              }
-
-              acc_dx += b_dx;
-              acc_dy += b_dy;
+              /* Pure 1:1 direct linear mapping - zero acceleration, no scaling, zero truncation */
+              acc_dx += dx;
+              acc_dy += dy;
               has_rel = true;
             }
           } else {
