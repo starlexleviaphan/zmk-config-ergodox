@@ -9,6 +9,7 @@
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/i2c.h>
 #include <zephyr/input/input.h>
+#include <zephyr/dt-bindings/input/input-event-codes.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 
@@ -207,14 +208,14 @@ static void synaptics_work_handler(struct k_work *work) {
           int16_t swipe_dy = (int16_t)avg3_y - (int16_t)data->three_finger_start_y;
           if (!data->three_finger_swiped) {
             if (swipe_dy > THREE_FINGER_SWIPE_THRESHOLD) {
-              /* Swipe Up: Task View (Win+Tab) */
-              input_report_key(dev, INPUT_BTN_FORWARD, 1, true, K_NO_WAIT);
-              input_report_key(dev, INPUT_BTN_FORWARD, 0, true, K_NO_WAIT);
+              /* Swipe Up: Task View (Win+Tab via INPUT_BTN_EXTRA) */
+              input_report_key(dev, INPUT_BTN_EXTRA, 1, true, K_NO_WAIT);
+              input_report_key(dev, INPUT_BTN_EXTRA, 0, true, K_NO_WAIT);
               data->three_finger_swiped = true;
             } else if (swipe_dy < -THREE_FINGER_SWIPE_THRESHOLD) {
-              /* Swipe Down: Show Desktop (Win+D) */
-              input_report_key(dev, INPUT_BTN_BACK, 1, true, K_NO_WAIT);
-              input_report_key(dev, INPUT_BTN_BACK, 0, true, K_NO_WAIT);
+              /* Swipe Down: Show Desktop (Win+D via INPUT_BTN_SIDE) */
+              input_report_key(dev, INPUT_BTN_SIDE, 1, true, K_NO_WAIT);
+              input_report_key(dev, INPUT_BTN_SIDE, 0, true, K_NO_WAIT);
               data->three_finger_swiped = true;
             }
           }
