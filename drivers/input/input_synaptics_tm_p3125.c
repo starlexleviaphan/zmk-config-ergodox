@@ -19,10 +19,10 @@ LOG_MODULE_REGISTER(synaptics_tm_p3125, LOG_LEVEL_INF);
 #define SYNAPTICS_REPORT_MOUSE 0x02
 
 /* Precision tap & drag timings (libinput & Windows PTP standard) */
-#define TAP_MAX_DURATION_MS 260
-#define TAP_MAX_DISPLACEMENT 55
-#define TAP_DRAG_TIMEOUT_MS 300
-#define TAP_DRAG_MAX_DISTANCE 80
+#define TAP_MAX_DURATION_MS 280
+#define TAP_MAX_DISPLACEMENT 60
+#define TAP_DRAG_TIMEOUT_MS 400
+#define TAP_DRAG_MAX_DISTANCE 140
 
 /* Scroll & gesture thresholds */
 #define SCROLL_THRESHOLD 35
@@ -133,22 +133,7 @@ static void synaptics_swipe_down_release_handler(struct k_work *work) {
 }
 
 static void synaptics_inertial_scroll_handler(struct k_work *work) {
-  struct k_work_delayable *dwork = k_work_delayable_from_work(work);
-  struct synaptics_data *data =
-      CONTAINER_OF(dwork, struct synaptics_data, inertial_scroll_work);
-
-  if (data->inertial_dy != 0) {
-    int dir = (data->inertial_dy > 0) ? 1 : -1;
-    input_report_rel(data->dev, INPUT_REL_WHEEL, dir, true, K_NO_WAIT);
-
-    /* Exponential decay (decay factor 0.8) */
-    data->inertial_dy = (data->inertial_dy * 8) / 10;
-    if (data->inertial_dy > 1 || data->inertial_dy < -1) {
-      k_work_schedule(&data->inertial_scroll_work, K_MSEC(25));
-    } else {
-      data->inertial_dy = 0;
-    }
-  }
+  /* No-op: OS native smooth scrolling handles deceleration without reverse bounce */
 }
 
 static void synaptics_process_liftoff(struct synaptics_data *data) {
@@ -172,12 +157,10 @@ static void synaptics_process_liftoff(struct synaptics_data *data) {
         /* 2-Finger Tap: Right Click */
         input_report_key(dev, INPUT_BTN_RIGHT, 1, true, K_NO_WAIT);
         k_work_schedule(&data->tap_right_release_work, K_MSEC(50));
-      } else if (data->two_finger_scrolled &&
-                 (data->last_scroll_dy > 45 || data->last_scroll_dy < -45)) {
-        /* Kinetic scroll momentum */
-        data->inertial_dy = data->last_scroll_dy / 2;
-        k_work_schedule(&data->inertial_scroll_work, K_MSEC(25));
       }
+      k_work_cancel_delayable(&data->inertial_scroll_work);
+      data->inertial_dy = 0;
+      data->last_scroll_dy = 0;
       data->prev_two_finger = false;
       data->two_finger_scrolled = false;
       data->two_finger_release_time = k_uptime_get();
@@ -323,41 +306,49 @@ static void synaptics_work_handler(struct k_work *work) {
         data->prev_touching = false;
         data->inertial_dy = 0;
 
-        uint16_t avg_y = (y0 + y1) / 2;
-        uint16_t avg_x = (x0 + x1) / 2;
+        if (tip0 && tip1) {
+          uint16_t avg_y = (y0 + y1) / 2;
+          uint16_t avg_x = (x0 + x1) / 2;
 
-        if (data->prev_two_finger) {
-          int16_t scroll_dy = (int16_t)avg_y - (int16_t)data->prev_scroll_y;
-          int16_t scroll_dx = (int16_t)avg_x - (int16_t)data->prev_scroll_x;
+          if (data->prev_two_finger) {
+            int16_t scroll_dy = (int16_t)avg_y - (int16_t)data->prev_scroll_y;
+            int16_t scroll_dx = (int16_t)avg_x - (int16_t)data->prev_scroll_x;
 
-          if (scroll_dy > SCROLL_THRESHOLD) {
-            input_report_rel(dev, INPUT_REL_WHEEL, 1, true, K_NO_WAIT);
+            if (scroll_dy > -120 && scroll_dy < 120) {
+              if (scroll_dy > SCROLL_THRESHOLD) {
+                input_report_rel(dev, INPUT_REL_WHEEL, 1, true, K_NO_WAIT);
+                data->prev_scroll_y = avg_y;
+                data->two_finger_scrolled = true;
+              } else if (scroll_dy < -SCROLL_THRESHOLD) {
+                input_report_rel(dev, INPUT_REL_WHEEL, -1, true, K_NO_WAIT);
+                data->prev_scroll_y = avg_y;
+                data->two_finger_scrolled = true;
+              }
+            } else {
+              data->prev_scroll_y = avg_y;
+            }
+
+            if (scroll_dx > -120 && scroll_dx < 120) {
+              if (scroll_dx > SCROLL_THRESHOLD) {
+                input_report_rel(dev, INPUT_REL_HWHEEL, 1, true, K_NO_WAIT);
+                data->prev_scroll_x = avg_x;
+                data->two_finger_scrolled = true;
+              } else if (scroll_dx < -SCROLL_THRESHOLD) {
+                input_report_rel(dev, INPUT_REL_HWHEEL, -1, true, K_NO_WAIT);
+                data->prev_scroll_x = avg_x;
+                data->two_finger_scrolled = true;
+              }
+            } else {
+              data->prev_scroll_x = avg_x;
+            }
+          } else {
             data->prev_scroll_y = avg_y;
-            data->last_scroll_dy = scroll_dy;
-            data->two_finger_scrolled = true;
-          } else if (scroll_dy < -SCROLL_THRESHOLD) {
-            input_report_rel(dev, INPUT_REL_WHEEL, -1, true, K_NO_WAIT);
-            data->prev_scroll_y = avg_y;
-            data->last_scroll_dy = scroll_dy;
-            data->two_finger_scrolled = true;
-          }
-
-          if (scroll_dx > SCROLL_THRESHOLD) {
-            input_report_rel(dev, INPUT_REL_HWHEEL, 1, true, K_NO_WAIT);
             data->prev_scroll_x = avg_x;
-            data->two_finger_scrolled = true;
-          } else if (scroll_dx < -SCROLL_THRESHOLD) {
-            input_report_rel(dev, INPUT_REL_HWHEEL, -1, true, K_NO_WAIT);
-            data->prev_scroll_x = avg_x;
-            data->two_finger_scrolled = true;
+            data->two_finger_start_time = k_uptime_get();
+            data->two_finger_scrolled = false;
+            data->last_scroll_dy = 0;
+            data->prev_two_finger = true;
           }
-        } else {
-          data->prev_scroll_y = avg_y;
-          data->prev_scroll_x = avg_x;
-          data->two_finger_start_time = k_uptime_get();
-          data->two_finger_scrolled = false;
-          data->last_scroll_dy = 0;
-          data->prev_two_finger = true;
         }
       }
       /* ========================================================================= */
@@ -366,8 +357,8 @@ static void synaptics_work_handler(struct k_work *work) {
       else if (data->gesture_max_fingers == 1 && tip0) {
         int64_t now = k_uptime_get();
 
-        /* If previous touch was lifted or gap between packets exceeds 25 ms: treat as fresh Touch Down */
-        if (!data->prev_touching || (now - data->prev_x0_time > 25)) {
+        /* Fresh Touch Down when previous touch was lifted */
+        if (!data->prev_touching) {
           /* Touch Down */
           data->touch_start_time = now;
           data->touch_start_x = x0;
@@ -433,9 +424,9 @@ static void synaptics_work_handler(struct k_work *work) {
     }
   } /* End FIFO loop */
 
-  /* Inactivity check: if sensor produced no packets for > 20 ms, process liftoff */
+  /* Inactivity check: if sensor produced no packets for >= 100 ms, process liftoff */
   if (packets_read == 0) {
-    if ((k_uptime_get() - data->last_packet_time) >= 20) {
+    if ((k_uptime_get() - data->last_packet_time) >= 100) {
       if (data->prev_touching || data->prev_two_finger || data->prev_three_finger ||
           data->gesture_max_fingers > 0) {
         synaptics_process_liftoff(data);
@@ -458,8 +449,8 @@ static void synaptics_work_handler(struct k_work *work) {
   if (gpio_pin_get_dt(&config->irq_gpio) > 0) {
     k_work_schedule(&data->work, K_MSEC(2));
   } else if (data->prev_touching || data->prev_two_finger || data->prev_three_finger ||
-             data->is_tap_dragging || data->inertial_dy != 0 || data->gesture_max_fingers > 0) {
-    if ((k_uptime_get() - data->last_packet_time) <= 25) {
+             data->is_tap_dragging || data->gesture_max_fingers > 0) {
+    if ((k_uptime_get() - data->last_packet_time) < 100) {
       k_work_schedule(&data->work, K_MSEC(4));
     }
   }
