@@ -19,14 +19,14 @@ LOG_MODULE_REGISTER(synaptics_tm_p3125, LOG_LEVEL_INF);
 #define SYNAPTICS_REPORT_MOUSE 0x02
 
 /* Precision tap & drag timings (libinput & Windows PTP standard) */
-#define TAP_MAX_DURATION_MS 220
-#define TAP_MAX_MOVE 60
-#define TAP_DRAG_TIMEOUT_MS 280
-#define DRAG_LOCK_TIMEOUT_MS 320
+#define TAP_MAX_DURATION_MS 260
+#define TAP_MAX_DISPLACEMENT 55
+#define TAP_DRAG_TIMEOUT_MS 300
+#define TAP_DRAG_MAX_DISTANCE 80
 
 /* Scroll & gesture thresholds */
 #define SCROLL_THRESHOLD 35
-#define THREE_FINGER_SWIPE_THRESHOLD 110
+#define THREE_FINGER_SWIPE_THRESHOLD 100
 
 /* Palm rejection: edge exclusion margin (Sensor X range: 0..1219) */
 #define PALM_EDGE_LEFT 70
@@ -44,25 +44,32 @@ struct synaptics_data {
   struct k_work_delayable heartbeat_work;
   struct gpio_callback gpio_cb;
 
-  /* Tap release works */
+  /* Tap and swipe release works */
   struct k_work_delayable tap_release_work;
   struct k_work_delayable tap_right_release_work;
   struct k_work_delayable tap_middle_release_work;
-  struct k_work_delayable drag_lock_work;
+  struct k_work_delayable swipe_up_release_work;
+  struct k_work_delayable swipe_down_release_work;
   struct k_work_delayable inertial_scroll_work;
 
   /* Active I2C address */
   uint16_t active_addr;
 
+  /* Contact tracking across touch sequence */
+  uint8_t gesture_max_fingers;
+
   /* 1-Finger tracking & Ballistics */
   bool prev_touching;
   uint16_t prev_x0;
   uint16_t prev_y0;
+  uint16_t touch_start_x;
+  uint16_t touch_start_y;
+  uint16_t touch_max_disp;
   int64_t touch_start_time;
-  int16_t total_move_x;
-  int16_t total_move_y;
 
   /* Tap and Drag state machine */
+  uint16_t last_tap_x;
+  uint16_t last_tap_y;
   int64_t last_tap_release_time;
   bool is_tap_dragging;
 
@@ -109,14 +116,18 @@ static void synaptics_tap_middle_release_handler(struct k_work *work) {
   input_report_key(data->dev, INPUT_BTN_MIDDLE, 0, true, K_NO_WAIT);
 }
 
-static void synaptics_drag_lock_handler(struct k_work *work) {
+static void synaptics_swipe_up_release_handler(struct k_work *work) {
   struct k_work_delayable *dwork = k_work_delayable_from_work(work);
   struct synaptics_data *data =
-      CONTAINER_OF(dwork, struct synaptics_data, drag_lock_work);
-  if (data->is_tap_dragging) {
-    data->is_tap_dragging = false;
-    input_report_key(data->dev, INPUT_BTN_LEFT, 0, true, K_NO_WAIT);
-  }
+      CONTAINER_OF(dwork, struct synaptics_data, swipe_up_release_work);
+  input_report_key(data->dev, INPUT_BTN_3, 0, true, K_NO_WAIT);
+}
+
+static void synaptics_swipe_down_release_handler(struct k_work *work) {
+  struct k_work_delayable *dwork = k_work_delayable_from_work(work);
+  struct synaptics_data *data =
+      CONTAINER_OF(dwork, struct synaptics_data, swipe_down_release_work);
+  input_report_key(data->dev, INPUT_BTN_4, 0, true, K_NO_WAIT);
 }
 
 static void synaptics_inertial_scroll_handler(struct k_work *work) {
@@ -149,7 +160,7 @@ static void synaptics_work_handler(struct k_work *work) {
   bool has_rel = false;
 
   /* Read all pending packets while INT is asserted (active-low GPIO returns > 0) */
-  for (int iter = 0; iter < 10; iter++) {
+  for (int iter = 0; iter < 16; iter++) {
     int pin_active = gpio_pin_get_dt(&config->irq_gpio);
     if (pin_active <= 0) {
       break;
@@ -167,7 +178,6 @@ static void synaptics_work_handler(struct k_work *work) {
     if (report_id == SYNAPTICS_REPORT_TOUCH) {
       /* Slot 0 (Finger 1) */
       uint8_t status0 = buf[3];
-      bool confidence0 = (status0 & 0x01) != 0;
       bool tip0 = (status0 & 0x02) != 0;
       uint16_t x0 = (uint16_t)(buf[4] | (buf[5] << 8));
       uint16_t y0 = (uint16_t)(buf[6] | (buf[7] << 8));
@@ -191,13 +201,84 @@ static void synaptics_work_handler(struct k_work *work) {
         input_report_key(dev, INPUT_BTN_LEFT, physical_btn ? 1 : 0, true, K_NO_WAIT);
       }
 
-      bool is_three_finger = (tip0 && tip1 && tip2) || (contact_count >= 3);
+      /* Determine active contact count */
+      uint8_t contacts = 0;
+      if (tip0) contacts++;
+      if (tip1) contacts++;
+      if (tip2) contacts++;
+      if (contact_count > contacts) contacts = contact_count;
+
+      /* Track maximum concurrent fingers in the current touch sequence */
+      if (contacts > data->gesture_max_fingers) {
+        data->gesture_max_fingers = contacts;
+      }
 
       /* ========================================================================= */
-      /* BRANCH A: 3-FINGER MULTITOUCH (Middle click tap & Window navigation)      */
+      /* CASE 1: ALL FINGERS LIFTED (Touch sequence completion & tap recognition)  */
       /* ========================================================================= */
-      if (is_three_finger) {
-        /* Cancel ongoing 1-finger and 2-finger gestures */
+      if (contacts == 0) {
+        /* Release 3-finger touch */
+        if (data->gesture_max_fingers >= 3) {
+          if (data->prev_three_finger) {
+            int64_t dur3 = k_uptime_get() - data->three_finger_start_time;
+            if (!data->three_finger_swiped && dur3 < TAP_MAX_DURATION_MS) {
+              /* 3-Finger Tap: Middle Click */
+              input_report_key(dev, INPUT_BTN_MIDDLE, 1, true, K_NO_WAIT);
+              k_work_schedule(&data->tap_middle_release_work, K_MSEC(40));
+            }
+            data->prev_three_finger = false;
+          }
+          data->three_finger_swiped = false;
+        }
+        /* Release 2-finger touch */
+        else if (data->gesture_max_fingers == 2) {
+          if (data->prev_two_finger) {
+            int64_t dur2 = k_uptime_get() - data->two_finger_start_time;
+            if (!data->two_finger_scrolled && dur2 < TAP_MAX_DURATION_MS) {
+              /* 2-Finger Tap: Right Click */
+              input_report_key(dev, INPUT_BTN_RIGHT, 1, true, K_NO_WAIT);
+              k_work_schedule(&data->tap_right_release_work, K_MSEC(50));
+            } else if (data->two_finger_scrolled &&
+                       (data->last_scroll_dy > 45 || data->last_scroll_dy < -45)) {
+              /* Kinetic scroll momentum */
+              data->inertial_dy = data->last_scroll_dy / 2;
+              k_work_schedule(&data->inertial_scroll_work, K_MSEC(25));
+            }
+            data->prev_two_finger = false;
+            data->two_finger_scrolled = false;
+            data->two_finger_release_time = k_uptime_get();
+          }
+        }
+        /* Release 1-finger touch */
+        else if (data->gesture_max_fingers == 1) {
+          if (data->prev_touching) {
+            int64_t duration = k_uptime_get() - data->touch_start_time;
+
+            if (data->is_tap_dragging) {
+              /* Drop: Release Left button immediately on finger lift */
+              data->is_tap_dragging = false;
+              input_report_key(dev, INPUT_BTN_LEFT, 0, true, K_NO_WAIT);
+              data->last_tap_release_time = 0;
+            } else if (duration < TAP_MAX_DURATION_MS &&
+                       data->touch_max_disp < TAP_MAX_DISPLACEMENT) {
+              /* Single Tap: Click */
+              input_report_key(dev, INPUT_BTN_LEFT, 1, true, K_NO_WAIT);
+              k_work_schedule(&data->tap_release_work, K_MSEC(35));
+              data->last_tap_release_time = k_uptime_get();
+              data->last_tap_x = data->touch_start_x;
+              data->last_tap_y = data->touch_start_y;
+            }
+            data->prev_touching = false;
+          }
+        }
+
+        /* Reset gesture sequence tracker when all fingers leave pad */
+        data->gesture_max_fingers = 0;
+      }
+      /* ========================================================================= */
+      /* CASE 2: ACTIVE 3-FINGER GESTURE (Task View / Show Desktop)                */
+      /* ========================================================================= */
+      else if (data->gesture_max_fingers >= 3) {
         data->prev_touching = false;
         data->prev_two_finger = false;
         data->inertial_dy = 0;
@@ -207,15 +288,15 @@ static void synaptics_work_handler(struct k_work *work) {
         if (data->prev_three_finger) {
           int16_t swipe_dy = (int16_t)avg3_y - (int16_t)data->three_finger_start_y;
           if (!data->three_finger_swiped) {
-            if (swipe_dy > THREE_FINGER_SWIPE_THRESHOLD) {
-              /* Swipe Up: Task View (Win+Tab via INPUT_BTN_3) */
+            if (swipe_dy < -THREE_FINGER_SWIPE_THRESHOLD) {
+              /* Swipe Up: Task View (Win+Tab via INPUT_BTN_3) with safe delayed release */
               input_report_key(dev, INPUT_BTN_3, 1, true, K_NO_WAIT);
-              input_report_key(dev, INPUT_BTN_3, 0, true, K_NO_WAIT);
+              k_work_schedule(&data->swipe_up_release_work, K_MSEC(50));
               data->three_finger_swiped = true;
-            } else if (swipe_dy < -THREE_FINGER_SWIPE_THRESHOLD) {
-              /* Swipe Down: Show Desktop (Win+D via INPUT_BTN_4) */
+            } else if (swipe_dy > THREE_FINGER_SWIPE_THRESHOLD) {
+              /* Swipe Down: Show Desktop (Win+D via INPUT_BTN_4) with safe delayed release */
               input_report_key(dev, INPUT_BTN_4, 1, true, K_NO_WAIT);
-              input_report_key(dev, INPUT_BTN_4, 0, true, K_NO_WAIT);
+              k_work_schedule(&data->swipe_down_release_work, K_MSEC(50));
               data->three_finger_swiped = true;
             }
           }
@@ -227,20 +308,9 @@ static void synaptics_work_handler(struct k_work *work) {
         }
       }
       /* ========================================================================= */
-      /* BRANCH B: 2-FINGER MULTITOUCH (Vertical & Horizontal scroll, Right click) */
+      /* CASE 3: ACTIVE 2-FINGER GESTURE (Vertical & Horizontal Scroll)            */
       /* ========================================================================= */
-      else if (tip0 && tip1) {
-        /* Transition out of 3-finger */
-        if (data->prev_three_finger) {
-          int64_t dur3 = k_uptime_get() - data->three_finger_start_time;
-          if (!data->three_finger_swiped && dur3 < TAP_MAX_DURATION_MS) {
-            /* 3-Finger Tap: Middle Click */
-            input_report_key(dev, INPUT_BTN_MIDDLE, 1, true, K_NO_WAIT);
-            k_work_schedule(&data->tap_middle_release_work, K_MSEC(40));
-          }
-          data->prev_three_finger = false;
-        }
-
+      else if (data->gesture_max_fingers == 2) {
         data->prev_touching = false;
         data->inertial_dy = 0;
 
@@ -282,41 +352,10 @@ static void synaptics_work_handler(struct k_work *work) {
         }
       }
       /* ========================================================================= */
-      /* BRANCH C: 1-FINGER (Cursor ballistics, Tap-to-Click, Tap-and-Drag)        */
+      /* CASE 4: ACTIVE 1-FINGER GESTURE (Cursor tracking & Tap-and-Drag)          */
       /* ========================================================================= */
-      else {
-        /* Transition out of 3-finger */
-        if (data->prev_three_finger) {
-          int64_t dur3 = k_uptime_get() - data->three_finger_start_time;
-          if (!data->three_finger_swiped && dur3 < TAP_MAX_DURATION_MS) {
-            input_report_key(dev, INPUT_BTN_MIDDLE, 1, true, K_NO_WAIT);
-            k_work_schedule(&data->tap_middle_release_work, K_MSEC(40));
-          }
-          data->prev_three_finger = false;
-        }
-
-        /* Transition out of 2-finger */
-        if (data->prev_two_finger) {
-          int64_t dur2 = k_uptime_get() - data->two_finger_start_time;
-          if (!data->two_finger_scrolled && dur2 < TAP_MAX_DURATION_MS) {
-            /* 2-Finger Tap: Right Click */
-            input_report_key(dev, INPUT_BTN_RIGHT, 1, true, K_NO_WAIT);
-            k_work_schedule(&data->tap_right_release_work, K_MSEC(50));
-          } else if (data->two_finger_scrolled && (data->last_scroll_dy > 45 || data->last_scroll_dy < -45)) {
-            /* Kinetic scroll momentum */
-            data->inertial_dy = data->last_scroll_dy / 2;
-            k_work_schedule(&data->inertial_scroll_work, K_MSEC(25));
-          }
-          data->prev_two_finger = false;
-          data->two_finger_release_time = k_uptime_get();
-        }
-
-        /* 1-Finger tracking: any physical touch (tip0) is immediately valid.
-         * Zero deadzone, no artificial edge exclusions.
-         * The slightest finger movement responds immediately with 1:1 linear tracking.
-         */
-        if (tip0 && (k_uptime_get() - data->two_finger_release_time >= 50)) {
-          /* Stop inertial scroll immediately upon touch */
+      else if (data->gesture_max_fingers == 1 && tip0) {
+        if (k_uptime_get() - data->two_finger_release_time >= 50) {
           data->inertial_dy = 0;
 
           if (data->prev_touching) {
@@ -324,10 +363,19 @@ static void synaptics_work_handler(struct k_work *work) {
             int16_t dy = (int16_t)y0 - (int16_t)data->prev_y0;
 
             if (dx > -400 && dx < 400 && dy > -400 && dy < 400) {
-              data->total_move_x += (dx > 0 ? dx : -dx);
-              data->total_move_y += (dy > 0 ? dy : -dy);
+              /* Displacement from touch down point */
+              int16_t cur_disp_x = (int16_t)x0 - (int16_t)data->touch_start_x;
+              int16_t cur_disp_y = (int16_t)y0 - (int16_t)data->touch_start_y;
+              if (cur_disp_x < 0) cur_disp_x = -cur_disp_x;
+              if (cur_disp_y < 0) cur_disp_y = -cur_disp_y;
+              if ((uint16_t)cur_disp_x > data->touch_max_disp) {
+                data->touch_max_disp = (uint16_t)cur_disp_x;
+              }
+              if ((uint16_t)cur_disp_y > data->touch_max_disp) {
+                data->touch_max_disp = (uint16_t)cur_disp_y;
+              }
 
-              /* Pure 1:1 direct linear mapping - zero acceleration, no scaling, zero truncation */
+              /* Pure 1:1 direct linear motion */
               acc_dx += dx;
               acc_dy += dy;
               has_rel = true;
@@ -336,42 +384,30 @@ static void synaptics_work_handler(struct k_work *work) {
             /* Touch Down */
             int64_t now = k_uptime_get();
             data->touch_start_time = now;
-            data->total_move_x = 0;
-            data->total_move_y = 0;
+            data->touch_start_x = x0;
+            data->touch_start_y = y0;
+            data->touch_max_disp = 0;
+
+            int16_t d_tap_x = (int16_t)x0 - (int16_t)data->last_tap_x;
+            int16_t d_tap_y = (int16_t)y0 - (int16_t)data->last_tap_y;
+            if (d_tap_x < 0) d_tap_x = -d_tap_x;
+            if (d_tap_y < 0) d_tap_y = -d_tap_y;
 
             /* Check Tap-and-Drag double tap condition */
-            if ((now - data->last_tap_release_time) < TAP_DRAG_TIMEOUT_MS) {
+            if ((now - data->last_tap_release_time) < TAP_DRAG_TIMEOUT_MS &&
+                d_tap_x < TAP_DRAG_MAX_DISTANCE && d_tap_y < TAP_DRAG_MAX_DISTANCE) {
               data->is_tap_dragging = true;
               k_work_cancel_delayable(&data->tap_release_work);
-              k_work_cancel_delayable(&data->drag_lock_work);
               input_report_key(dev, INPUT_BTN_LEFT, 1, true, K_NO_WAIT);
-            } else if (data->is_tap_dragging) {
-              /* Re-touched during Drag Lock period: continue dragging */
-              k_work_cancel_delayable(&data->drag_lock_work);
+              data->last_tap_release_time = 0;
+            } else {
+              data->is_tap_dragging = false;
             }
           }
 
           data->prev_x0 = x0;
           data->prev_y0 = y0;
           data->prev_touching = true;
-        } else {
-          /* Release event */
-          if (data->prev_touching) {
-            int64_t duration = k_uptime_get() - data->touch_start_time;
-
-            if (data->is_tap_dragging) {
-              /* Drag Lock: keep BTN_LEFT held for 320ms to allow finger re-positioning */
-              k_work_schedule(&data->drag_lock_work, K_MSEC(DRAG_LOCK_TIMEOUT_MS));
-            } else if (duration < TAP_MAX_DURATION_MS &&
-                       data->total_move_x < TAP_MAX_MOVE &&
-                       data->total_move_y < TAP_MAX_MOVE) {
-              /* Single Tap: Click */
-              input_report_key(dev, INPUT_BTN_LEFT, 1, true, K_NO_WAIT);
-              k_work_schedule(&data->tap_release_work, K_MSEC(40));
-              data->last_tap_release_time = k_uptime_get();
-            }
-          }
-          data->prev_touching = false;
         }
       }
     } else if (report_id == SYNAPTICS_REPORT_MOUSE) {
@@ -389,9 +425,15 @@ static void synaptics_work_handler(struct k_work *work) {
     input_report_rel(dev, INPUT_REL_Y, acc_dy, true, K_NO_WAIT);
   }
 
-  /* Polling management: poll fast while fingers are active; sleep when released */
-  if (data->prev_touching || data->prev_two_finger || data->prev_three_finger ||
-      data->is_tap_dragging || data->inertial_dy != 0) {
+  /* Polling management:
+   * 1. If INT pin is still asserted (active-low GPIO returns > 0), re-schedule immediately
+   *    so no edge interrupt is missed and hardware FIFO is fully drained!
+   * 2. If fingers are active or gestures ongoing, poll fast (4 ms).
+   */
+  if (gpio_pin_get_dt(&config->irq_gpio) > 0) {
+    k_work_schedule(&data->work, K_MSEC(2));
+  } else if (data->prev_touching || data->prev_two_finger || data->prev_three_finger ||
+             data->is_tap_dragging || data->inertial_dy != 0 || data->gesture_max_fingers > 0) {
     k_work_schedule(&data->work, K_MSEC(4));
   }
 }
@@ -411,7 +453,14 @@ static void synaptics_heartbeat_handler(struct k_work *work) {
   struct k_work_delayable *dwork = k_work_delayable_from_work(work);
   struct synaptics_data *data =
       CONTAINER_OF(dwork, struct synaptics_data, heartbeat_work);
-  k_work_schedule(&data->heartbeat_work, K_SECONDS(10));
+  const struct device *dev = data->dev;
+  const struct synaptics_config *config = dev->config;
+
+  /* Fail-safe watchdog: if INT pin is asserted while work is idle, wake it up immediately */
+  if (gpio_pin_get_dt(&config->irq_gpio) > 0) {
+    k_work_schedule(&data->work, K_NO_WAIT);
+  }
+  k_work_schedule(&data->heartbeat_work, K_SECONDS(3));
 }
 
 static void synaptics_delayed_init_handler(struct k_work *work) {
@@ -489,7 +538,8 @@ static int synaptics_init(const struct device *dev) {
   k_work_init_delayable(&data->tap_release_work, synaptics_tap_release_handler);
   k_work_init_delayable(&data->tap_right_release_work, synaptics_tap_right_release_handler);
   k_work_init_delayable(&data->tap_middle_release_work, synaptics_tap_middle_release_handler);
-  k_work_init_delayable(&data->drag_lock_work, synaptics_drag_lock_handler);
+  k_work_init_delayable(&data->swipe_up_release_work, synaptics_swipe_up_release_handler);
+  k_work_init_delayable(&data->swipe_down_release_work, synaptics_swipe_down_release_handler);
   k_work_init_delayable(&data->inertial_scroll_work, synaptics_inertial_scroll_handler);
 
   if (!i2c_is_ready_dt(&config->i2c) || !gpio_is_ready_dt(&config->irq_gpio)) {
