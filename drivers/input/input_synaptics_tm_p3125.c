@@ -62,10 +62,12 @@ struct synaptics_data {
   bool prev_touching;
   uint16_t prev_x0;
   uint16_t prev_y0;
+  int64_t prev_x0_time;
   uint16_t touch_start_x;
   uint16_t touch_start_y;
   uint16_t touch_max_disp;
   int64_t touch_start_time;
+  int64_t last_packet_time;
 
   /* Tap and Drag state machine */
   uint16_t last_tap_x;
@@ -149,6 +151,65 @@ static void synaptics_inertial_scroll_handler(struct k_work *work) {
   }
 }
 
+static void synaptics_process_liftoff(struct synaptics_data *data) {
+  const struct device *dev = data->dev;
+
+  if (data->gesture_max_fingers >= 3) {
+    if (data->prev_three_finger) {
+      int64_t dur3 = k_uptime_get() - data->three_finger_start_time;
+      if (!data->three_finger_swiped && dur3 < TAP_MAX_DURATION_MS) {
+        /* 3-Finger Tap: Middle Click */
+        input_report_key(dev, INPUT_BTN_MIDDLE, 1, true, K_NO_WAIT);
+        k_work_schedule(&data->tap_middle_release_work, K_MSEC(40));
+      }
+      data->prev_three_finger = false;
+    }
+    data->three_finger_swiped = false;
+  } else if (data->gesture_max_fingers == 2) {
+    if (data->prev_two_finger) {
+      int64_t dur2 = k_uptime_get() - data->two_finger_start_time;
+      if (!data->two_finger_scrolled && dur2 < TAP_MAX_DURATION_MS) {
+        /* 2-Finger Tap: Right Click */
+        input_report_key(dev, INPUT_BTN_RIGHT, 1, true, K_NO_WAIT);
+        k_work_schedule(&data->tap_right_release_work, K_MSEC(50));
+      } else if (data->two_finger_scrolled &&
+                 (data->last_scroll_dy > 45 || data->last_scroll_dy < -45)) {
+        /* Kinetic scroll momentum */
+        data->inertial_dy = data->last_scroll_dy / 2;
+        k_work_schedule(&data->inertial_scroll_work, K_MSEC(25));
+      }
+      data->prev_two_finger = false;
+      data->two_finger_scrolled = false;
+      data->two_finger_release_time = k_uptime_get();
+    }
+  } else if (data->gesture_max_fingers == 1 || data->prev_touching) {
+    if (data->prev_touching) {
+      int64_t duration = k_uptime_get() - data->touch_start_time;
+
+      if (data->is_tap_dragging) {
+        /* Drop: Release Left button immediately on finger lift */
+        data->is_tap_dragging = false;
+        input_report_key(dev, INPUT_BTN_LEFT, 0, true, K_NO_WAIT);
+        data->last_tap_release_time = 0;
+      } else if (duration < TAP_MAX_DURATION_MS &&
+                 data->touch_max_disp < TAP_MAX_DISPLACEMENT) {
+        /* Single Tap: Click */
+        input_report_key(dev, INPUT_BTN_LEFT, 1, true, K_NO_WAIT);
+        k_work_schedule(&data->tap_release_work, K_MSEC(35));
+        data->last_tap_release_time = k_uptime_get();
+        data->last_tap_x = data->touch_start_x;
+        data->last_tap_y = data->touch_start_y;
+      }
+      data->prev_touching = false;
+    }
+  }
+
+  data->gesture_max_fingers = 0;
+  data->prev_touching = false;
+  data->prev_two_finger = false;
+  data->prev_three_finger = false;
+}
+
 static void synaptics_work_handler(struct k_work *work) {
   struct k_work_delayable *dwork = k_work_delayable_from_work(work);
   struct synaptics_data *data = CONTAINER_OF(dwork, struct synaptics_data, work);
@@ -158,6 +219,7 @@ static void synaptics_work_handler(struct k_work *work) {
   int16_t acc_dx = 0;
   int16_t acc_dy = 0;
   bool has_rel = false;
+  int packets_read = 0;
 
   /* Read all pending packets while INT is asserted (active-low GPIO returns > 0) */
   for (int iter = 0; iter < 16; iter++) {
@@ -172,6 +234,9 @@ static void synaptics_work_handler(struct k_work *work) {
     if (ret < 0) {
       break;
     }
+
+    packets_read++;
+    data->last_packet_time = k_uptime_get();
 
     uint8_t report_id = buf[2];
 
@@ -217,63 +282,7 @@ static void synaptics_work_handler(struct k_work *work) {
       /* CASE 1: ALL FINGERS LIFTED (Touch sequence completion & tap recognition)  */
       /* ========================================================================= */
       if (contacts == 0) {
-        /* Release 3-finger touch */
-        if (data->gesture_max_fingers >= 3) {
-          if (data->prev_three_finger) {
-            int64_t dur3 = k_uptime_get() - data->three_finger_start_time;
-            if (!data->three_finger_swiped && dur3 < TAP_MAX_DURATION_MS) {
-              /* 3-Finger Tap: Middle Click */
-              input_report_key(dev, INPUT_BTN_MIDDLE, 1, true, K_NO_WAIT);
-              k_work_schedule(&data->tap_middle_release_work, K_MSEC(40));
-            }
-            data->prev_three_finger = false;
-          }
-          data->three_finger_swiped = false;
-        }
-        /* Release 2-finger touch */
-        else if (data->gesture_max_fingers == 2) {
-          if (data->prev_two_finger) {
-            int64_t dur2 = k_uptime_get() - data->two_finger_start_time;
-            if (!data->two_finger_scrolled && dur2 < TAP_MAX_DURATION_MS) {
-              /* 2-Finger Tap: Right Click */
-              input_report_key(dev, INPUT_BTN_RIGHT, 1, true, K_NO_WAIT);
-              k_work_schedule(&data->tap_right_release_work, K_MSEC(50));
-            } else if (data->two_finger_scrolled &&
-                       (data->last_scroll_dy > 45 || data->last_scroll_dy < -45)) {
-              /* Kinetic scroll momentum */
-              data->inertial_dy = data->last_scroll_dy / 2;
-              k_work_schedule(&data->inertial_scroll_work, K_MSEC(25));
-            }
-            data->prev_two_finger = false;
-            data->two_finger_scrolled = false;
-            data->two_finger_release_time = k_uptime_get();
-          }
-        }
-        /* Release 1-finger touch */
-        else if (data->gesture_max_fingers == 1) {
-          if (data->prev_touching) {
-            int64_t duration = k_uptime_get() - data->touch_start_time;
-
-            if (data->is_tap_dragging) {
-              /* Drop: Release Left button immediately on finger lift */
-              data->is_tap_dragging = false;
-              input_report_key(dev, INPUT_BTN_LEFT, 0, true, K_NO_WAIT);
-              data->last_tap_release_time = 0;
-            } else if (duration < TAP_MAX_DURATION_MS &&
-                       data->touch_max_disp < TAP_MAX_DISPLACEMENT) {
-              /* Single Tap: Click */
-              input_report_key(dev, INPUT_BTN_LEFT, 1, true, K_NO_WAIT);
-              k_work_schedule(&data->tap_release_work, K_MSEC(35));
-              data->last_tap_release_time = k_uptime_get();
-              data->last_tap_x = data->touch_start_x;
-              data->last_tap_y = data->touch_start_y;
-            }
-            data->prev_touching = false;
-          }
-        }
-
-        /* Reset gesture sequence tracker when all fingers leave pad */
-        data->gesture_max_fingers = 0;
+        synaptics_process_liftoff(data);
       }
       /* ========================================================================= */
       /* CASE 2: ACTIVE 3-FINGER GESTURE (Task View / Show Desktop)                */
@@ -355,59 +364,64 @@ static void synaptics_work_handler(struct k_work *work) {
       /* CASE 4: ACTIVE 1-FINGER GESTURE (Cursor tracking & Tap-and-Drag)          */
       /* ========================================================================= */
       else if (data->gesture_max_fingers == 1 && tip0) {
-        if (k_uptime_get() - data->two_finger_release_time >= 50) {
+        int64_t now = k_uptime_get();
+
+        /* If previous touch was lifted or gap between packets exceeds 25 ms: treat as fresh Touch Down */
+        if (!data->prev_touching || (now - data->prev_x0_time > 25)) {
+          /* Touch Down */
+          data->touch_start_time = now;
+          data->touch_start_x = x0;
+          data->touch_start_y = y0;
+          data->touch_max_disp = 0;
           data->inertial_dy = 0;
 
-          if (data->prev_touching) {
-            int16_t dx = (int16_t)x0 - (int16_t)data->prev_x0;
-            int16_t dy = (int16_t)y0 - (int16_t)data->prev_y0;
+          int16_t d_tap_x = (int16_t)x0 - (int16_t)data->last_tap_x;
+          int16_t d_tap_y = (int16_t)y0 - (int16_t)data->last_tap_y;
+          if (d_tap_x < 0) d_tap_x = -d_tap_x;
+          if (d_tap_y < 0) d_tap_y = -d_tap_y;
 
-            if (dx > -400 && dx < 400 && dy > -400 && dy < 400) {
-              /* Displacement from touch down point */
-              int16_t cur_disp_x = (int16_t)x0 - (int16_t)data->touch_start_x;
-              int16_t cur_disp_y = (int16_t)y0 - (int16_t)data->touch_start_y;
-              if (cur_disp_x < 0) cur_disp_x = -cur_disp_x;
-              if (cur_disp_y < 0) cur_disp_y = -cur_disp_y;
-              if ((uint16_t)cur_disp_x > data->touch_max_disp) {
-                data->touch_max_disp = (uint16_t)cur_disp_x;
-              }
-              if ((uint16_t)cur_disp_y > data->touch_max_disp) {
-                data->touch_max_disp = (uint16_t)cur_disp_y;
-              }
-
-              /* Pure 1:1 direct linear motion */
-              acc_dx += dx;
-              acc_dy += dy;
-              has_rel = true;
-            }
+          /* Check Tap-and-Drag double tap condition */
+          if ((now - data->last_tap_release_time) < TAP_DRAG_TIMEOUT_MS &&
+              d_tap_x < TAP_DRAG_MAX_DISTANCE && d_tap_y < TAP_DRAG_MAX_DISTANCE) {
+            data->is_tap_dragging = true;
+            k_work_cancel_delayable(&data->tap_release_work);
+            input_report_key(dev, INPUT_BTN_LEFT, 1, true, K_NO_WAIT);
+            data->last_tap_release_time = 0;
           } else {
-            /* Touch Down */
-            int64_t now = k_uptime_get();
-            data->touch_start_time = now;
-            data->touch_start_x = x0;
-            data->touch_start_y = y0;
-            data->touch_max_disp = 0;
-
-            int16_t d_tap_x = (int16_t)x0 - (int16_t)data->last_tap_x;
-            int16_t d_tap_y = (int16_t)y0 - (int16_t)data->last_tap_y;
-            if (d_tap_x < 0) d_tap_x = -d_tap_x;
-            if (d_tap_y < 0) d_tap_y = -d_tap_y;
-
-            /* Check Tap-and-Drag double tap condition */
-            if ((now - data->last_tap_release_time) < TAP_DRAG_TIMEOUT_MS &&
-                d_tap_x < TAP_DRAG_MAX_DISTANCE && d_tap_y < TAP_DRAG_MAX_DISTANCE) {
-              data->is_tap_dragging = true;
-              k_work_cancel_delayable(&data->tap_release_work);
-              input_report_key(dev, INPUT_BTN_LEFT, 1, true, K_NO_WAIT);
-              data->last_tap_release_time = 0;
-            } else {
-              data->is_tap_dragging = false;
-            }
+            data->is_tap_dragging = false;
           }
 
           data->prev_x0 = x0;
           data->prev_y0 = y0;
+          data->prev_x0_time = now;
           data->prev_touching = true;
+        } else {
+          /* Continuous dragging/moving: strictly compute delta from previous position */
+          int16_t dx = (int16_t)x0 - (int16_t)data->prev_x0;
+          int16_t dy = (int16_t)y0 - (int16_t)data->prev_y0;
+
+          /* Filter out abnormal positional teleportation / glitch jumps (> 160 units in ~4-8 ms) */
+          if (dx > -160 && dx < 160 && dy > -160 && dy < 160) {
+            /* Displacement from touch down point */
+            int16_t cur_disp_x = (int16_t)x0 - (int16_t)data->touch_start_x;
+            int16_t cur_disp_y = (int16_t)y0 - (int16_t)data->touch_start_y;
+            if (cur_disp_x < 0) cur_disp_x = -cur_disp_x;
+            if (cur_disp_y < 0) cur_disp_y = -cur_disp_y;
+            if ((uint16_t)cur_disp_x > data->touch_max_disp) {
+              data->touch_max_disp = (uint16_t)cur_disp_x;
+            }
+            if ((uint16_t)cur_disp_y > data->touch_max_disp) {
+              data->touch_max_disp = (uint16_t)cur_disp_y;
+            }
+
+            acc_dx += dx;
+            acc_dy += dy;
+            has_rel = true;
+          }
+
+          data->prev_x0 = x0;
+          data->prev_y0 = y0;
+          data->prev_x0_time = now;
         }
       }
     } else if (report_id == SYNAPTICS_REPORT_MOUSE) {
@@ -419,6 +433,16 @@ static void synaptics_work_handler(struct k_work *work) {
     }
   } /* End FIFO loop */
 
+  /* Inactivity check: if sensor produced no packets for > 20 ms, process liftoff */
+  if (packets_read == 0) {
+    if ((k_uptime_get() - data->last_packet_time) >= 20) {
+      if (data->prev_touching || data->prev_two_finger || data->prev_three_finger ||
+          data->gesture_max_fingers > 0) {
+        synaptics_process_liftoff(data);
+      }
+    }
+  }
+
   /* Emit aggregated movement across drained packets */
   if (has_rel && (acc_dx != 0 || acc_dy != 0)) {
     input_report_rel(dev, INPUT_REL_X, acc_dx, false, K_NO_WAIT);
@@ -428,13 +452,16 @@ static void synaptics_work_handler(struct k_work *work) {
   /* Polling management:
    * 1. If INT pin is still asserted (active-low GPIO returns > 0), re-schedule immediately
    *    so no edge interrupt is missed and hardware FIFO is fully drained!
-   * 2. If fingers are active or gestures ongoing, poll fast (4 ms).
+   * 2. If fingers are active and packets were recently received, continue fast poll (4 ms).
+   * 3. Otherwise stop polling completely and allow CPU to sleep until next INT pin edge.
    */
   if (gpio_pin_get_dt(&config->irq_gpio) > 0) {
     k_work_schedule(&data->work, K_MSEC(2));
   } else if (data->prev_touching || data->prev_two_finger || data->prev_three_finger ||
              data->is_tap_dragging || data->inertial_dy != 0 || data->gesture_max_fingers > 0) {
-    k_work_schedule(&data->work, K_MSEC(4));
+    if ((k_uptime_get() - data->last_packet_time) <= 25) {
+      k_work_schedule(&data->work, K_MSEC(4));
+    }
   }
 }
 
