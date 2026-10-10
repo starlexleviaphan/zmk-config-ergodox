@@ -26,7 +26,7 @@ LOG_MODULE_REGISTER(synaptics_tm_p3125, LOG_LEVEL_INF);
 
 /* Scroll & gesture thresholds */
 #define SCROLL_STEP 28
-#define THREE_FINGER_SWIPE_THRESHOLD 100
+#define THREE_FINGER_SWIPE_THRESHOLD 120
 
 /* Palm rejection: edge exclusion margin (Sensor X range: 0..1219) */
 #define PALM_EDGE_LEFT 70
@@ -151,6 +151,11 @@ static void synaptics_process_liftoff(struct synaptics_data *data) {
       }
       data->prev_three_finger = false;
     }
+    /* Guarantee any 3-finger swipe modifier is immediately released upon finger lift */
+    k_work_cancel_delayable(&data->swipe_up_release_work);
+    k_work_cancel_delayable(&data->swipe_down_release_work);
+    input_report_key(dev, INPUT_BTN_3, 0, true, K_NO_WAIT);
+    input_report_key(dev, INPUT_BTN_4, 0, true, K_NO_WAIT);
     data->three_finger_swiped = false;
   } else if (data->gesture_max_fingers == 2) {
     if (data->prev_two_finger) {
@@ -219,8 +224,8 @@ static void synaptics_work_handler(struct k_work *work) {
       break;
     }
 
-    /* Fast 32-byte read: covers Report ID, 3 finger slots, contact count, and buttons */
-    uint8_t buf[32];
+    /* Read full report (up to 64 bytes) to guarantee hardware FIFO is completely drained */
+    uint8_t buf[64];
     int ret = i2c_read(config->i2c.bus, buf, sizeof(buf), data->active_addr);
     if (ret < 0) {
       break;
@@ -282,28 +287,38 @@ static void synaptics_work_handler(struct k_work *work) {
         data->prev_two_finger = false;
         data->inertial_dy = 0;
 
-        uint16_t avg3_y = (y0 + y1 + y2) / 3;
-
-        if (data->prev_three_finger) {
-          int16_t swipe_dy = (int16_t)avg3_y - (int16_t)data->three_finger_start_y;
-          if (!data->three_finger_swiped) {
-            if (swipe_dy < -THREE_FINGER_SWIPE_THRESHOLD) {
-              /* Swipe Up: Task View (Win+Tab via INPUT_BTN_3) with safe delayed release */
-              input_report_key(dev, INPUT_BTN_3, 1, true, K_NO_WAIT);
-              k_work_schedule(&data->swipe_up_release_work, K_MSEC(50));
-              data->three_finger_swiped = true;
-            } else if (swipe_dy > THREE_FINGER_SWIPE_THRESHOLD) {
-              /* Swipe Down: Show Desktop (Win+D via INPUT_BTN_4) with safe delayed release */
-              input_report_key(dev, INPUT_BTN_4, 1, true, K_NO_WAIT);
-              k_work_schedule(&data->swipe_down_release_work, K_MSEC(50));
-              data->three_finger_swiped = true;
-            }
+        /* Only compute average Y from actively touching fingers */
+        if (contacts >= 2) {
+          uint16_t avg3_y;
+          if (tip0 && tip1 && tip2) {
+            avg3_y = (y0 + y1 + y2) / 3;
+          } else if (tip0 && tip1) {
+            avg3_y = (y0 + y1) / 2;
+          } else {
+            avg3_y = y0;
           }
-        } else {
-          data->three_finger_start_time = k_uptime_get();
-          data->three_finger_start_y = avg3_y;
-          data->three_finger_swiped = false;
-          data->prev_three_finger = true;
+
+          if (data->prev_three_finger) {
+            int16_t swipe_dy = (int16_t)avg3_y - (int16_t)data->three_finger_start_y;
+            if (!data->three_finger_swiped) {
+              if (swipe_dy < -THREE_FINGER_SWIPE_THRESHOLD) {
+                /* Swipe Up: Task View (Win+Tab via INPUT_BTN_3) with safe delayed release */
+                input_report_key(dev, INPUT_BTN_3, 1, true, K_NO_WAIT);
+                k_work_schedule(&data->swipe_up_release_work, K_MSEC(40));
+                data->three_finger_swiped = true;
+              } else if (swipe_dy > THREE_FINGER_SWIPE_THRESHOLD) {
+                /* Swipe Down: Show Desktop (Win+D via INPUT_BTN_4) with safe delayed release */
+                input_report_key(dev, INPUT_BTN_4, 1, true, K_NO_WAIT);
+                k_work_schedule(&data->swipe_down_release_work, K_MSEC(40));
+                data->three_finger_swiped = true;
+              }
+            }
+          } else {
+            data->three_finger_start_time = k_uptime_get();
+            data->three_finger_start_y = avg3_y;
+            data->three_finger_swiped = false;
+            data->prev_three_finger = true;
+          }
         }
       }
       /* ========================================================================= */
@@ -386,6 +401,8 @@ static void synaptics_work_handler(struct k_work *work) {
               d_tap_x < TAP_DRAG_MAX_DISTANCE && d_tap_y < TAP_DRAG_MAX_DISTANCE) {
             data->is_tap_dragging = true;
             k_work_cancel_delayable(&data->tap_release_work);
+            /* Guarantee host sees a clean release from Tap 1 before holding for drag */
+            input_report_key(dev, INPUT_BTN_LEFT, 0, true, K_NO_WAIT);
             input_report_key(dev, INPUT_BTN_LEFT, 1, true, K_NO_WAIT);
             data->last_tap_release_time = 0;
           } else {
@@ -434,11 +451,11 @@ static void synaptics_work_handler(struct k_work *work) {
     }
   } /* End FIFO loop */
 
-  /* Inactivity check: if sensor produced no packets for >= 50 ms, process liftoff */
+  /* Inactivity check: if sensor produced no packets for >= 250 ms, process liftoff */
   if (packets_read == 0) {
-    if ((k_uptime_get() - data->last_packet_time) >= 50) {
+    if ((k_uptime_get() - data->last_packet_time) >= 250) {
       if (data->prev_touching || data->prev_two_finger || data->prev_three_finger ||
-          data->gesture_max_fingers > 0) {
+          data->gesture_max_fingers > 0 || data->is_tap_dragging) {
         synaptics_process_liftoff(data);
       }
     }
@@ -453,14 +470,14 @@ static void synaptics_work_handler(struct k_work *work) {
   /* Polling management:
    * 1. If INT pin is still asserted (active-low GPIO returns > 0), re-schedule immediately
    *    so no edge interrupt is missed and hardware FIFO is fully drained!
-   * 2. If fingers are active and packets were recently received, continue fast poll (4 ms).
+   * 2. If fingers are active or dragging, continue fast poll (4 ms) during motion.
    * 3. Otherwise stop polling completely and allow CPU to sleep until next INT pin edge.
    */
   if (gpio_pin_get_dt(&config->irq_gpio) > 0) {
     k_work_schedule(&data->work, K_MSEC(2));
   } else if (data->prev_touching || data->prev_two_finger || data->prev_three_finger ||
              data->is_tap_dragging || data->gesture_max_fingers > 0) {
-    if ((k_uptime_get() - data->last_packet_time) < 60) {
+    if ((k_uptime_get() - data->last_packet_time) < 250) {
       k_work_schedule(&data->work, K_MSEC(4));
     }
   }
@@ -488,7 +505,7 @@ static void synaptics_heartbeat_handler(struct k_work *work) {
   if (gpio_pin_get_dt(&config->irq_gpio) > 0) {
     k_work_schedule(&data->work, K_NO_WAIT);
   }
-  k_work_schedule(&data->heartbeat_work, K_SECONDS(3));
+  k_work_schedule(&data->heartbeat_work, K_MSEC(100));
 }
 
 static void synaptics_delayed_init_handler(struct k_work *work) {
@@ -551,6 +568,9 @@ static void synaptics_delayed_init_handler(struct k_work *work) {
 
   /* Schedule work immediately to drain any pending state */
   k_work_schedule(&data->work, K_NO_WAIT);
+
+  /* Start fail-safe heartbeat watchdog every 100 ms */
+  k_work_schedule(&data->heartbeat_work, K_MSEC(100));
 
   LOG_INF("Synaptics TM-P3125 initialized successfully (Addr 0x%02X)", data->active_addr);
 }
