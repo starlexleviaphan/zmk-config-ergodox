@@ -342,7 +342,7 @@ int zmk_widget_dongle_battery_status_init(struct zmk_widget_dongle_battery_statu
     widget_dongle_battery_status_init();
 
     /* Initialize and schedule periodic battery polling */
-    k_work_delayable_init(&poll_battery_work, poll_battery_work_handler);
+    k_work_init_delayable(&poll_battery_work, poll_battery_work_handler);
     k_work_schedule_for_queue(zmk_display_work_q(), &poll_battery_work, K_SECONDS(5));
 
     return 0;
