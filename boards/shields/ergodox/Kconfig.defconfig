@@ -66,6 +66,9 @@ config BT_MAX_CONN
 config BT_MAX_PAIRED
     default 8
 
+config SHIELD_DONGLE_SCREEN
+    default y
+
 endif
 
 if SHIELD_ERGODOX_TOUCHPAD
