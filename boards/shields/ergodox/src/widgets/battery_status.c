@@ -57,11 +57,33 @@ static int8_t last_battery_levels[NUM_PERIPHERALS] = {-1, -1, -1};
 static int source_to_col[NUM_PERIPHERALS] = {COL_LEFT, COL_RIGHT, COL_TOUCHPAD};
 static enum peripheral_role source_roles[NUM_PERIPHERALS] = {ROLE_UNKNOWN, ROLE_UNKNOWN, ROLE_UNKNOWN};
 
+static inline bool is_right_key(uint32_t pos) {
+    if (pos >= 76) return false;
+    static const bool right_keys[76] = {
+        /* Row 0: 0..6 (L), 7..13 (R) */
+        0, 0, 0, 0, 0, 0, 0,  1, 1, 1, 1, 1, 1, 1,
+        /* Row 1: 14..20 (L), 21..27 (R) */
+        0, 0, 0, 0, 0, 0, 0,  1, 1, 1, 1, 1, 1, 1,
+        /* Row 2: 28..34 (L), 35..41 (R) */
+        0, 0, 0, 0, 0, 0, 0,  1, 1, 1, 1, 1, 1, 1,
+        /* Row 3: 42..47 (L), 48..53 (R) */
+        0, 0, 0, 0, 0, 0,     1, 1, 1, 1, 1, 1,
+        /* Row 4: 54..58 (L), 59..63 (R) */
+        0, 0, 0, 0, 0,        1, 1, 1, 1, 1,
+        /* Thumbs: 64,65 (L), 66,67 (R) */
+        0, 0, 1, 1,
+        /* Thumbs: 68..70 (L), 71..73 (R) */
+        0, 0, 0, 1, 1, 1,
+        /* Thumbs: 74 (L), 75 (R) */
+        0, 1
+    };
+    return right_keys[pos];
+}
+
 /* Periodic poll work item */
 static struct k_work_delayable poll_battery_work;
 
 static void update_display(void);
-static void assign_source_role(uint8_t source, enum peripheral_role role);
 
 /* --- Persistent Settings for Peripheral Roles --- */
 #if IS_ENABLED(CONFIG_SETTINGS)
@@ -74,23 +96,41 @@ static int role_settings_set(const char *name, size_t len, settings_read_cb read
         enum peripheral_role loaded_roles[NUM_PERIPHERALS];
         int rc = read_cb(cb_arg, loaded_roles, sizeof(loaded_roles));
         if (rc >= 0) {
+            bool valid = true;
+            int left_cnt = 0, right_cnt = 0, tp_cnt = 0;
             for (int i = 0; i < NUM_PERIPHERALS; i++) {
-                if (loaded_roles[i] != ROLE_UNKNOWN) {
-                    assign_source_role(i, loaded_roles[i]);
-                }
+                if (loaded_roles[i] == ROLE_LEFT) left_cnt++;
+                else if (loaded_roles[i] == ROLE_RIGHT) right_cnt++;
+                else if (loaded_roles[i] == ROLE_TOUCHPAD) tp_cnt++;
+                else if (loaded_roles[i] != ROLE_UNKNOWN) valid = false;
             }
-            LOG_INF("Loaded peripheral roles from settings: [%d, %d, %d]",
-                    source_roles[0], source_roles[1], source_roles[2]);
-            return 0;
+            if (left_cnt > 1 || right_cnt > 1 || tp_cnt > 1) {
+                valid = false;
+            }
+
+            if (valid) {
+                for (int i = 0; i < NUM_PERIPHERALS; i++) {
+                    source_roles[i] = loaded_roles[i];
+                    if (source_roles[i] == ROLE_LEFT) source_to_col[i] = COL_LEFT;
+                    else if (source_roles[i] == ROLE_RIGHT) source_to_col[i] = COL_RIGHT;
+                    else if (source_roles[i] == ROLE_TOUCHPAD) source_to_col[i] = COL_TOUCHPAD;
+                }
+                LOG_INF("Loaded peripheral roles from settings: [%d, %d, %d]",
+                        source_roles[0], source_roles[1], source_roles[2]);
+                update_display();
+                return 0;
+            } else {
+                LOG_WRN("Discarded invalid peripheral roles from settings");
+            }
         }
     }
     return -ENOENT;
 }
 
-SETTINGS_STATIC_HANDLER_DEFINE(ergodox_roles, "ergodox_roles", NULL, role_settings_set, NULL, NULL);
+SETTINGS_STATIC_HANDLER_DEFINE(ergodox_roles_v2, "ergodox_roles_v2", NULL, role_settings_set, NULL, NULL);
 
 static void save_roles_to_settings(void) {
-    int err = settings_save_one("ergodox_roles/source_roles", source_roles, sizeof(source_roles));
+    int err = settings_save_one("ergodox_roles_v2/source_roles", source_roles, sizeof(source_roles));
     if (err) {
         LOG_WRN("Failed to save peripheral roles to settings (err %d)", err);
     } else {
@@ -149,7 +189,7 @@ static void update_display(void) {
     for (int col = 0; col < NUM_PERIPHERALS; col++) {
         int src = -1;
         for (int i = 0; i < NUM_PERIPHERALS; i++) {
-            if (source_to_col[i] == col) {
+            if (source_roles[i] != ROLE_UNKNOWN && source_to_col[i] == col) {
                 src = i;
                 break;
             }
@@ -180,32 +220,27 @@ static void update_display(void) {
     }
 }
 
-static void assign_source_role(uint8_t source, enum peripheral_role role) {
-    if (source >= NUM_PERIPHERALS) return;
-    if (source_roles[source] == role) return;
+static void handle_key_press(uint8_t source, uint32_t position) {
+    if (source >= NUM_PERIPHERALS || position >= 76) return;
 
-    /* A role once identified is locked in and will not be overwritten by stray events */
-    if (source_roles[source] != ROLE_UNKNOWN && source_roles[source] != role) {
-        LOG_WRN("Ignoring conflicting role assignment for source %d: was %d, attempted %d",
-                source, source_roles[source], role);
-        return;
-    }
+    enum peripheral_role new_role = is_right_key(position) ? ROLE_RIGHT : ROLE_LEFT;
 
-    source_roles[source] = role;
+    if (source_roles[source] == new_role) return;
 
-    int target_col = (role == ROLE_LEFT) ? COL_LEFT :
-                     (role == ROLE_RIGHT) ? COL_RIGHT : COL_TOUCHPAD;
+    LOG_INF("Key pos %u from source %u -> role %s",
+            position, source, (new_role == ROLE_RIGHT) ? "RIGHT" : "LEFT");
 
-    /* If another source currently points to this column, swap them */
+    /* Clear any other source that was assigned this role */
     for (int i = 0; i < NUM_PERIPHERALS; i++) {
-        if (i != source && source_to_col[i] == target_col) {
-            source_to_col[i] = source_to_col[source];
-            break;
+        if (i != source && source_roles[i] == new_role) {
+            source_roles[i] = ROLE_UNKNOWN;
         }
     }
-    source_to_col[source] = target_col;
 
-    /* Deduce the third peripheral if two are established */
+    source_roles[source] = new_role;
+    source_to_col[source] = (new_role == ROLE_RIGHT) ? COL_RIGHT : COL_LEFT;
+
+    /* Deduce the third peripheral if left and right are known */
     int left_idx = -1, right_idx = -1, unk_idx = -1;
     for (int i = 0; i < NUM_PERIPHERALS; i++) {
         if (source_roles[i] == ROLE_LEFT) left_idx = i;
@@ -213,16 +248,17 @@ static void assign_source_role(uint8_t source, enum peripheral_role role) {
         else unk_idx = i;
     }
 
-    if (left_idx != -1 && right_idx != -1 && unk_idx != -1 && source_roles[unk_idx] == ROLE_UNKNOWN) {
+    if (left_idx != -1 && right_idx != -1 && unk_idx != -1) {
         source_roles[unk_idx] = ROLE_TOUCHPAD;
         source_to_col[unk_idx] = COL_TOUCHPAD;
+        LOG_INF("Deduced touchpad at source %d", unk_idx);
     }
 
-    LOG_INF("Role assigned: source %d -> role %d (col %d). Map: [%d->%d, %d->%d, %d->%d]",
-            source, role, target_col,
-            0, source_to_col[0], 1, source_to_col[1], 2, source_to_col[2]);
+    update_display();
 
-    save_roles_to_settings();
+    if (left_idx != -1 && right_idx != -1 && unk_idx != -1) {
+        save_roles_to_settings();
+    }
 }
 
 static void set_battery_symbol(lv_obj_t *widget, struct battery_state state) {
@@ -269,13 +305,7 @@ ZMK_SUBSCRIPTION(widget_dongle_battery_status, zmk_peripheral_battery_state_chan
 static int position_state_changed_listener(const zmk_event_t *eh) {
     const struct zmk_position_state_changed *ev = as_zmk_position_state_changed(eh);
     if (ev && ev->state && ev->source < NUM_PERIPHERALS) {
-        /* Left hand matrix: positions 0..37. Right hand matrix: positions 38..75. */
-        if (ev->position < 38) {
-            assign_source_role(ev->source, ROLE_LEFT);
-        } else {
-            assign_source_role(ev->source, ROLE_RIGHT);
-        }
-        update_display();
+        handle_key_press(ev->source, ev->position);
     }
     return 0;
 }
@@ -289,7 +319,7 @@ static void poll_battery_work_handler(struct k_work *work) {
     bool changed = false;
     for (uint8_t i = 0; i < NUM_PERIPHERALS; i++) {
         uint8_t level = 0;
-        if (zmk_split_central_get_peripheral_battery_level(i, &level) == 0 && level > 0) {
+        if (zmk_split_central_get_peripheral_battery_level(i, &level) == 0) {
             if (last_battery_levels[i] != (int8_t)level) {
                 last_battery_levels[i] = (int8_t)level;
                 changed = true;
