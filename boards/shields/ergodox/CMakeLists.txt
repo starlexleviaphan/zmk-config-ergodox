@@ -27,6 +27,8 @@ if(CONFIG_SHIELD_ERGODOX_DONGLE_DISPLAY)
     src/widgets/battery_status.c
     src/widgets/lock_status.c
     src/widgets/layer_badge.c
+    src/widgets/bongo_cat.c
+    src/widgets/wpm_gauge.c
     ${DONGLE_SCREEN_SRC_DIR}/src/widgets/layer_status.c
     ${DONGLE_SCREEN_SRC_DIR}/src/widgets/wpm_status.c
     ${DONGLE_SCREEN_SRC_DIR}/src/widgets/mod_status.c
