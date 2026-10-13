@@ -5,6 +5,7 @@
 
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/settings/settings.h>
 LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
 #include <lvgl.h>
@@ -172,6 +173,112 @@ void menu_controller_set_selected_item(uint8_t idx) {
         selected_item_idx = idx;
     }
 }
+
+/* --- Persistent Display Settings (written to flash only on Save & Exit) --- */
+#if IS_ENABLED(CONFIG_SETTINGS)
+static void settings_apply_handler(struct k_work *work) {
+    ARG_UNUSED(work);
+    /* Runs on the display work queue: safe to touch LVGL */
+    lv_disp_t *disp = lv_disp_get_default();
+    if (disp) {
+        lv_disp_set_rotation(disp, current_orientation_flipped ? LV_DISP_ROT_180 : LV_DISP_ROT_NONE);
+    }
+    k_work_submit_to_queue(zmk_display_work_q(), &menu_ui_work);
+}
+static K_WORK_DEFINE(settings_apply_work, settings_apply_handler);
+
+static bool settings_read_u8(size_t len, settings_read_cb read_cb, void *cb_arg, uint8_t *out) {
+    uint8_t v;
+    if (len != sizeof(v) || read_cb(cb_arg, &v, sizeof(v)) != (ssize_t)sizeof(v)) {
+        return false;
+    }
+    *out = v;
+    return true;
+}
+
+static int display_settings_set(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg) {
+    const char *next;
+    uint8_t v = 0;
+    bool applied = false;
+
+    if (settings_name_steq(name, "brightness", &next) && !next) {
+        if (settings_read_u8(len, read_cb, cb_arg, &v) && v >= 10 && v <= 100) {
+            current_brightness = v;
+            applied = true;
+        } else {
+            LOG_WRN("Discarded invalid brightness from settings");
+        }
+    } else if (settings_name_steq(name, "timeout_s", &next) && !next) {
+        uint16_t t;
+        bool found = false;
+        if (len == sizeof(t) && read_cb(cb_arg, &t, sizeof(t)) == (ssize_t)sizeof(t)) {
+            for (uint8_t i = 0; i < TIMEOUT_OPTIONS_COUNT; i++) {
+                if (timeout_values[i] == t) {
+                    current_timeout_idx = i;
+                    found = true;
+                    break;
+                }
+            }
+        }
+        if (found) {
+            applied = true;
+        } else {
+            LOG_WRN("Discarded invalid timeout from settings");
+        }
+    } else if (settings_name_steq(name, "flipped", &next) && !next) {
+        if (settings_read_u8(len, read_cb, cb_arg, &v) && v <= 1) {
+            current_orientation_flipped = (v != 0);
+            applied = true;
+        } else {
+            LOG_WRN("Discarded invalid orientation from settings");
+        }
+    } else if (settings_name_steq(name, "anim_style", &next) && !next) {
+        if (settings_read_u8(len, read_cb, cb_arg, &v) && v < ANIM_OPTIONS_COUNT) {
+            current_anim_idx = v;
+            applied = true;
+        } else {
+            LOG_WRN("Discarded invalid animation style from settings");
+        }
+    } else if (settings_name_steq(name, "theme_id", &next) && !next) {
+        if (settings_read_u8(len, read_cb, cb_arg, &v) && v < THEME_OPTIONS_COUNT) {
+            current_theme_idx = v;
+            applied = true;
+        } else {
+            LOG_WRN("Discarded invalid theme from settings");
+        }
+    }
+
+    if (applied) {
+        k_work_submit_to_queue(zmk_display_work_q(), &settings_apply_work);
+    }
+    return 0;
+}
+
+SETTINGS_STATIC_HANDLER_DEFINE(ergodox_display, "ergodox_display", NULL, display_settings_set, NULL, NULL);
+
+static void save_one_setting(const char *key, const void *val, size_t len) {
+    int err = settings_save_one(key, val, len);
+    if (err) {
+        LOG_WRN("Failed to save %s (err %d)", key, err);
+    }
+}
+
+static void save_display_settings(void) {
+    uint8_t b = current_brightness;
+    uint16_t t = timeout_values[current_timeout_idx];
+    uint8_t f = current_orientation_flipped ? 1 : 0;
+    uint8_t a = current_anim_idx;
+    uint8_t th = current_theme_idx;
+
+    save_one_setting("ergodox_display/brightness", &b, sizeof(b));
+    save_one_setting("ergodox_display/timeout_s", &t, sizeof(t));
+    save_one_setting("ergodox_display/flipped", &f, sizeof(f));
+    save_one_setting("ergodox_display/anim_style", &a, sizeof(a));
+    save_one_setting("ergodox_display/theme_id", &th, sizeof(th));
+}
+#else
+static void save_display_settings(void) {}
+#endif
 
 /* UI Redraw Routine */
 static void render_menu_items(void) {
@@ -439,6 +546,7 @@ void menu_controller_handle_nav(enum menu_nav_action action) {
             menu_controller_set_state(SCREEN_STATE_LAYER_MAP);
             return;
         } else if (selected_item_idx == MENU_ITEM_SAVE_EXIT) {
+            save_display_settings();
             menu_controller_set_state(SCREEN_STATE_DASHBOARD);
             return;
         }
