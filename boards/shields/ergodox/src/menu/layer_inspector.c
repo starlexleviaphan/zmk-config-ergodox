@@ -8,6 +8,9 @@
 LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
 #include <lvgl.h>
+#include <zmk/event_manager.h>
+#include <zmk/events/layer_state_changed.h>
+#include <zmk/keymap.h>
 #include "custom_status_screen.h"
 #include "widgets/layer_badge.h"
 #include "menu_controller.h"
@@ -24,6 +27,72 @@ LV_FONT_DECLARE(lv_font_montserrat_12);
 
 #define NUM_INSPECTED_LAYERS 14
 #define KEYS_PER_HALF 38
+
+static inline bool is_right_key(uint32_t pos) {
+    if (pos >= 76) return false;
+    static const bool right_keys[76] = {
+        /* Row 0: 0..6 (L), 7..13 (R) */
+        0, 0, 0, 0, 0, 0, 0,  1, 1, 1, 1, 1, 1, 1,
+        /* Row 1: 14..20 (L), 21..27 (R) */
+        0, 0, 0, 0, 0, 0, 0,  1, 1, 1, 1, 1, 1, 1,
+        /* Row 2: 28..34 (L), 35..41 (R) */
+        0, 0, 0, 0, 0, 0, 0,  1, 1, 1, 1, 1, 1, 1,
+        /* Row 3: 42..47 (L), 48..53 (R) */
+        0, 0, 0, 0, 0, 0,     1, 1, 1, 1, 1, 1,
+        /* Row 4: 54..58 (L), 59..63 (R) */
+        0, 0, 0, 0, 0,        1, 1, 1, 1, 1,
+        /* Thumbs: 64,65 (L), 66,67 (R) */
+        0, 0, 1, 1,
+        /* Thumbs: 68..70 (L), 71..73 (R) */
+        0, 0, 0, 1, 1, 1,
+        /* Thumbs: 74 (L), 75 (R) */
+        0, 1
+    };
+    return right_keys[pos];
+}
+
+/* Maps physical matrix key position (0..75) to layer_keys_data index (0..37 Left, 38..75 Right) */
+static const uint8_t matrix_pos_to_data_idx[76] = {
+    /* Row 0 Left (0..6) -> 0..6 */
+    0, 1, 2, 3, 4, 5, 6,
+    /* Row 0 Right (7..13) -> 38..44 */
+    38, 39, 40, 41, 42, 43, 44,
+
+    /* Row 1 Left (14..20) -> 7..13 */
+    7, 8, 9, 10, 11, 12, 13,
+    /* Row 1 Right (21..27) -> 45..51 */
+    45, 46, 47, 48, 49, 50, 51,
+
+    /* Row 2 Left (28..34) -> 14..20 */
+    14, 15, 16, 17, 18, 19, 20,
+    /* Row 2 Right (35..41) -> 52..58 */
+    52, 53, 54, 55, 56, 57, 58,
+
+    /* Row 3 Left (42..47) -> 21..26 */
+    21, 22, 23, 24, 25, 26,
+    /* Row 3 Right (48..53) -> 59..64 */
+    59, 60, 61, 62, 63, 64,
+
+    /* Row 4 Left (54..58) -> 27..31 */
+    27, 28, 29, 30, 31,
+    /* Row 4 Right (59..63) -> 65..69 */
+    65, 66, 67, 68, 69,
+
+    /* Thumbs Left: 64, 65 -> 32, 33 */
+    32, 33,
+    /* Thumbs Right: 66, 67 -> 70, 71 */
+    70, 71,
+
+    /* Thumbs Left: 68..70 -> 34..36 */
+    34, 35, 36,
+    /* Thumbs Right: 71..73 -> 72..74 */
+    72, 73, 74,
+
+    /* Thumbs Left: 74 -> 37 */
+    37,
+    /* Thumbs Right: 75 -> 75 */
+    75
+};
 
 struct category_style {
     uint32_t bg;
@@ -63,6 +132,7 @@ static const struct category_style cat_styles[KEY_CAT_COUNT] = {
 static uint8_t current_layer = 0;
 static bool current_is_left_half = true;
 static volatile bool inspector_active = false;
+static bool is_dashboard_mode = false;
 
 /* LVGL UI Objects */
 static lv_obj_t *inspector_container = NULL;
@@ -72,6 +142,7 @@ static lv_obj_t *sep_top_obj = NULL;
 static lv_obj_t *sep_bot_obj = NULL;
 static lv_obj_t *footer_label = NULL;
 static lv_obj_t *cell_labels[KEYS_PER_HALF];
+
 
 uint8_t layer_inspector_get_current_layer(void) {
     return current_layer;
@@ -179,9 +250,18 @@ static int layer_inspector_build_ui(lv_obj_t *screen) {
     return 0;
 }
 
+static void layer_inspector_work_handler(struct k_work *work);
+static K_WORK_DEFINE(layer_inspector_work, layer_inspector_work_handler);
+
+static void layer_inspector_work_handler(struct k_work *work) {
+    ARG_UNUSED(work);
+    layer_inspector_render();
+}
+
 int layer_inspector_init(lv_obj_t *screen) {
     saved_parent_screen = screen;
     inspector_active = false;
+    is_dashboard_mode = false;
     return 0;
 }
 
@@ -209,14 +289,42 @@ void layer_inspector_render(void) {
 
     /* Apply active theme to inspector container and separators */
     const struct theme_palette *pal = zmk_display_get_theme_palette(get_active_theme());
-    if (pal) {
-        lv_obj_set_style_bg_color(inspector_container, lv_color_hex(pal->bg), 0);
-        lv_obj_set_style_border_color(inspector_container, lv_color_hex(pal->border), 0);
-        if (sep_top_obj) {
-            lv_obj_set_style_bg_color(sep_top_obj, lv_color_hex(pal->border), 0);
+
+    if (is_dashboard_mode) {
+        /* Transparent overlay on dashboard: hide modal borders and navigations */
+        lv_obj_set_style_bg_opa(inspector_container, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(inspector_container, 0, 0);
+        if (sep_top_obj) lv_obj_add_flag(sep_top_obj, LV_OBJ_FLAG_HIDDEN);
+        if (sep_bot_obj) lv_obj_add_flag(sep_bot_obj, LV_OBJ_FLAG_HIDDEN);
+        if (footer_label) lv_obj_add_flag(footer_label, LV_OBJ_FLAG_HIDDEN);
+        if (header_title_label) {
+            lv_obj_set_pos(header_title_label, 10, 36);
         }
-        if (sep_bot_obj) {
-            lv_obj_set_style_bg_color(sep_bot_obj, lv_color_hex(pal->border), 0);
+        if (header_half_label) {
+            lv_obj_align(header_half_label, LV_ALIGN_TOP_RIGHT, -10, 36);
+        }
+    } else {
+        /* Fullscreen modal menu inspector */
+        lv_obj_set_style_bg_opa(inspector_container, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(inspector_container, 1, 0);
+        if (pal) {
+            lv_obj_set_style_bg_color(inspector_container, lv_color_hex(pal->bg), 0);
+            lv_obj_set_style_border_color(inspector_container, lv_color_hex(pal->border), 0);
+            if (sep_top_obj) {
+                lv_obj_set_style_bg_color(sep_top_obj, lv_color_hex(pal->border), 0);
+            }
+            if (sep_bot_obj) {
+                lv_obj_set_style_bg_color(sep_bot_obj, lv_color_hex(pal->border), 0);
+            }
+        }
+        if (sep_top_obj) lv_obj_clear_flag(sep_top_obj, LV_OBJ_FLAG_HIDDEN);
+        if (sep_bot_obj) lv_obj_clear_flag(sep_bot_obj, LV_OBJ_FLAG_HIDDEN);
+        if (footer_label) lv_obj_clear_flag(footer_label, LV_OBJ_FLAG_HIDDEN);
+        if (header_title_label) {
+            lv_obj_set_pos(header_title_label, 10, 6);
+        }
+        if (header_half_label) {
+            lv_obj_align(header_half_label, LV_ALIGN_TOP_RIGHT, -10, 6);
         }
     }
 
@@ -279,15 +387,30 @@ int layer_inspector_show(uint8_t layer, bool is_left_half) {
     }
     current_layer = layer;
     current_is_left_half = is_left_half;
+    is_dashboard_mode = false;
     inspector_active = true;
+    k_work_submit_to_queue(zmk_display_work_q(), &layer_inspector_work);
+    return 0;
+}
 
-    /* State only; menu_controller schedules layer_inspector_render() on the display queue. */
+int layer_inspector_show_dashboard(uint8_t layer, bool is_left_half) {
+    if (layer >= NUM_INSPECTED_LAYERS) {
+        layer = 0;
+    }
+    current_layer = layer;
+    current_is_left_half = is_left_half;
+    is_dashboard_mode = true;
+    inspector_active = true;
+    k_work_submit_to_queue(zmk_display_work_q(), &layer_inspector_work);
     return 0;
 }
 
 void layer_inspector_hide(void) {
-    /* State only; the next layer_inspector_render() on the display queue hides the container. */
     inspector_active = false;
+    is_dashboard_mode = false;
+    if (inspector_container) {
+        lv_obj_add_flag(inspector_container, LV_OBJ_FLAG_HIDDEN);
+    }
 }
 
 void layer_inspector_handle_nav(enum menu_nav_action action) {
@@ -321,3 +444,51 @@ void layer_inspector_handle_nav(enum menu_nav_action action) {
         break;
     }
 }
+
+void layer_inspector_on_key_position(uint32_t position) {
+    if (position >= 76) {
+        return;
+    }
+    uint8_t highest_layer = zmk_keymap_highest_layer_active();
+    if (highest_layer >= NUM_INSPECTED_LAYERS) {
+        highest_layer = 0;
+    }
+
+    uint8_t data_idx = matrix_pos_to_data_idx[position];
+    const struct key_cell_info *info = &layer_keys_data[highest_layer][data_idx];
+    /* Skip changing half if the key is a layer trigger / switch */
+    if (info->cat == KEY_CAT_LAYER) {
+        return;
+    }
+
+    bool is_right = is_right_key(position);
+    bool new_is_left = !is_right;
+    if (new_is_left != current_is_left_half) {
+        current_is_left_half = new_is_left;
+        if (inspector_active) {
+            k_work_submit_to_queue(zmk_display_work_q(), &layer_inspector_work);
+        }
+    }
+}
+
+void layer_inspector_on_layer_change(uint8_t layer) {
+    if (layer >= NUM_INSPECTED_LAYERS) {
+        layer = 0;
+    }
+    if (layer != current_layer) {
+        current_layer = layer;
+        if (inspector_active) {
+            k_work_submit_to_queue(zmk_display_work_q(), &layer_inspector_work);
+        }
+    }
+}
+
+static int layer_inspector_layer_changed_listener(const zmk_event_t *eh) {
+    ARG_UNUSED(eh);
+    uint8_t highest_layer = zmk_keymap_highest_layer_active();
+    layer_inspector_on_layer_change(highest_layer);
+    return ZMK_EV_EVENT_BUBBLE;
+}
+ZMK_LISTENER(layer_inspector_layer_tracker, layer_inspector_layer_changed_listener);
+ZMK_SUBSCRIPTION(layer_inspector_layer_tracker, zmk_layer_state_changed);
+

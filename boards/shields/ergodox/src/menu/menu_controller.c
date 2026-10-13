@@ -15,6 +15,7 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #include <zmk/event_manager.h>
 #include <zmk/keymap.h>
 #include <zmk/hid.h>
+#include <zmk/endpoints.h>
 #include <zmk/events/position_state_changed.h>
 #include <zmk/events/keycode_state_changed.h>
 
@@ -68,9 +69,10 @@ static uint8_t current_timeout_idx = 4; /* default 600s */
 
 static bool current_orientation_flipped = true; /* default 180 deg */
 
-static const char * const anim_labels[] = {"Bongo Cat", "WPM Gauge", "Off"};
+static const char * const anim_labels[] = {"Bongo Cat", "WPM Gauge", "Layer Map", "Off"};
 #define ANIM_OPTIONS_COUNT ((uint8_t)(sizeof(anim_labels) / sizeof(anim_labels[0])))
 static uint8_t current_anim_idx = 0; /* default Bongo Cat */
+
 
 static const char * const theme_labels[] = {"Cyberpunk", "Monokai", "Matrix", "Clean"};
 #define THEME_OPTIONS_COUNT ((uint8_t)(sizeof(theme_labels) / sizeof(theme_labels[0])))
@@ -450,16 +452,22 @@ void menu_controller_set_state(enum screen_state new_state) {
     case SCREEN_STATE_DASHBOARD:
         menu_is_active = false;
         zmk_hid_keyboard_clear();
+        zmk_endpoints_send_report(HID_USAGE_KEY);
+        if (zmk_keymap_layer_active(6)) {
+            zmk_keymap_layer_deactivate(6);
+        }
         break;
 
     case SCREEN_STATE_MENU:
         menu_is_active = true;
         zmk_hid_keyboard_clear();
+        zmk_endpoints_send_report(HID_USAGE_KEY);
         break;
 
     case SCREEN_STATE_LAYER_MAP:
         menu_is_active = true;
         zmk_hid_keyboard_clear();
+        zmk_endpoints_send_report(HID_USAGE_KEY);
         layer_inspector_show(zmk_keymap_highest_layer_active(), true);
         break;
     }
@@ -606,41 +614,56 @@ void menu_controller_handle_nav(enum menu_nav_action action) {
 /* Event Listeners */
 int menu_position_state_changed_listener(const zmk_event_t *eh) {
     const struct zmk_position_state_changed *ev = as_zmk_position_state_changed(eh);
-    if (!ev || !ev->state) {
-        return 0;
+    if (!ev) {
+        return ZMK_EV_EVENT_BUBBLE;
     }
 
     /* Toggle trigger: position 1 on Layer 6 (MOUS) */
     if (ev->position == POS_F21_L6 && zmk_keymap_highest_layer_active() == 6) {
-        menu_controller_toggle();
-        zmk_hid_keyboard_clear();
-        return 0;
+        if (ev->state) {
+            menu_controller_toggle();
+            zmk_hid_keyboard_clear();
+            zmk_endpoints_send_report(HID_USAGE_KEY);
+        }
+        return ZMK_EV_EVENT_HANDLED;
     }
 
     if (!menu_is_active) {
-        return 0;
+        /* When typing on Dashboard and Layer Map anim mode is active, track last pressed key half */
+        if (ev->state && current_anim_idx == 2) {
+            layer_inspector_on_key_position(ev->position);
+        }
+        return ZMK_EV_EVENT_BUBBLE;
     }
 
-    /* Suppress keystrokes from host */
-    zmk_hid_keyboard_clear();
-
-    /* Matrix navigation routing */
-    if (ev->position == POS_W) {
-        menu_controller_handle_nav(MENU_NAV_UP);
-    } else if (ev->position == POS_S) {
-        menu_controller_handle_nav(MENU_NAV_DOWN);
-    } else if (ev->position == POS_A) {
-        menu_controller_handle_nav(MENU_NAV_DEC);
-    } else if (ev->position == POS_D) {
-        menu_controller_handle_nav(MENU_NAV_INC);
-    } else if (ev->position == POS_ENTER_R ||
-               ev->position == POS_SPACE_L || ev->position == POS_SPACE_R) {
-        menu_controller_handle_nav(MENU_NAV_SELECT);
-    } else if (ev->position == POS_ESC) {
-        menu_controller_handle_nav(MENU_NAV_EXIT);
+    /* While in Menu Mode: suppress key presses from reaching keymap or host */
+    if (ev->state) {
+        /* Matrix navigation routing */
+        if (ev->position == POS_W) {
+            menu_controller_handle_nav(MENU_NAV_UP);
+        } else if (ev->position == POS_S) {
+            menu_controller_handle_nav(MENU_NAV_DOWN);
+        } else if (ev->position == POS_A) {
+            menu_controller_handle_nav(MENU_NAV_DEC);
+        } else if (ev->position == POS_D) {
+            menu_controller_handle_nav(MENU_NAV_INC);
+        } else if (ev->position == POS_ENTER_R ||
+                   ev->position == POS_SPACE_L || ev->position == POS_SPACE_R) {
+            menu_controller_handle_nav(MENU_NAV_SELECT);
+        } else if (ev->position == POS_ESC) {
+            menu_controller_handle_nav(MENU_NAV_EXIT);
+        }
+        zmk_hid_keyboard_clear();
+        zmk_endpoints_send_report(HID_USAGE_KEY);
+        return ZMK_EV_EVENT_HANDLED;
+    } else {
+        /* Key release during menu mode:
+         * Ensure HID report remains clean, but allow release to bubble so hold-taps
+         * activated prior to menu entry (e.g. &lt 6 DEL) cleanly release in keymap! */
+        zmk_hid_keyboard_clear();
+        zmk_endpoints_send_report(HID_USAGE_KEY);
+        return ZMK_EV_EVENT_BUBBLE;
     }
-
-    return 0;
 }
 
 ZMK_LISTENER(menu_pos_tracker, menu_position_state_changed_listener);
@@ -648,42 +671,50 @@ ZMK_SUBSCRIPTION(menu_pos_tracker, zmk_position_state_changed);
 
 int menu_keycode_state_changed_listener(const zmk_event_t *eh) {
     const struct zmk_keycode_state_changed *ev = as_zmk_keycode_state_changed(eh);
-    if (!ev || !ev->state) {
-        return 0;
+    if (!ev) {
+        return ZMK_EV_EVENT_BUBBLE;
     }
 
     uint32_t usage = ev->keycode & 0xFF;
 
     /* Toggle trigger: F21 keycode */
     if (usage == HID_KEY_F21) {
-        menu_controller_toggle();
-        zmk_hid_keyboard_clear();
-        return 0;
+        if (ev->state) {
+            menu_controller_toggle();
+            zmk_hid_keyboard_clear();
+            zmk_endpoints_send_report(HID_USAGE_KEY);
+        }
+        return ZMK_EV_EVENT_HANDLED;
     }
 
     if (!menu_is_active) {
-        return 0;
+        return ZMK_EV_EVENT_BUBBLE;
     }
 
-    /* Suppress keystrokes from host */
-    zmk_hid_keyboard_clear();
-
-    /* Keycode navigation routing */
-    if (usage == HID_KEY_W || usage == HID_KEY_UP) {
-        menu_controller_handle_nav(MENU_NAV_UP);
-    } else if (usage == HID_KEY_S || usage == HID_KEY_DOWN) {
-        menu_controller_handle_nav(MENU_NAV_DOWN);
-    } else if (usage == HID_KEY_A || usage == HID_KEY_LEFT) {
-        menu_controller_handle_nav(MENU_NAV_DEC);
-    } else if (usage == HID_KEY_D || usage == HID_KEY_RIGHT) {
-        menu_controller_handle_nav(MENU_NAV_INC);
-    } else if (usage == HID_KEY_RETURN || usage == HID_KEY_SPACE) {
-        menu_controller_handle_nav(MENU_NAV_SELECT);
-    } else if (usage == HID_KEY_ESCAPE) {
-        menu_controller_handle_nav(MENU_NAV_EXIT);
+    /* Suppress keystrokes from host while in Menu Mode */
+    if (ev->state) {
+        /* Keycode navigation routing */
+        if (usage == HID_KEY_W || usage == HID_KEY_UP) {
+            menu_controller_handle_nav(MENU_NAV_UP);
+        } else if (usage == HID_KEY_S || usage == HID_KEY_DOWN) {
+            menu_controller_handle_nav(MENU_NAV_DOWN);
+        } else if (usage == HID_KEY_A || usage == HID_KEY_LEFT) {
+            menu_controller_handle_nav(MENU_NAV_DEC);
+        } else if (usage == HID_KEY_D || usage == HID_KEY_RIGHT) {
+            menu_controller_handle_nav(MENU_NAV_INC);
+        } else if (usage == HID_KEY_RETURN || usage == HID_KEY_SPACE) {
+            menu_controller_handle_nav(MENU_NAV_SELECT);
+        } else if (usage == HID_KEY_ESCAPE) {
+            menu_controller_handle_nav(MENU_NAV_EXIT);
+        }
+        zmk_hid_keyboard_clear();
+        zmk_endpoints_send_report(HID_USAGE_KEY);
+        return ZMK_EV_EVENT_HANDLED;
+    } else {
+        zmk_hid_keyboard_clear();
+        zmk_endpoints_send_report(HID_USAGE_KEY);
+        return ZMK_EV_EVENT_BUBBLE;
     }
-
-    return 0;
 }
 
 ZMK_LISTENER(menu_key_tracker, menu_keycode_state_changed_listener);

@@ -10,6 +10,8 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #include <lvgl.h>
 #include "custom_status_screen.h"
 #include "menu/menu_controller.h"
+#include "menu/layer_inspector.h"
+
 
 #if IS_ENABLED(CONFIG_DONGLE_SCREEN_OUTPUT_ACTIVE)
 #include "widgets/output_status.h"
@@ -119,20 +121,49 @@ void zmk_display_apply_animation(uint8_t anim_idx) {
         lv_obj_clear_flag(wpm_card_obj, LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_pos(wpm_card_obj, 6, 102);
         lv_obj_set_size(wpm_card_obj, 130, 68);
+        if (cards[1]) lv_obj_clear_flag(cards[1], LV_OBJ_FLAG_HIDDEN); /* Layer badge */
+        if (cards[4]) {
+            lv_obj_set_pos(cards[4], 6, 176);
+            lv_obj_set_size(cards[4], 268, 58);
+        }
+        layer_inspector_hide();
         break;
     case 1: /* WPM Gauge (Hero mode: center/right expanded) */
         lv_obj_add_flag(bongo_card_obj, LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(wpm_card_obj, LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_pos(wpm_card_obj, 142, 38);
         lv_obj_set_size(wpm_card_obj, 132, 132);
+        if (cards[1]) lv_obj_clear_flag(cards[1], LV_OBJ_FLAG_HIDDEN); /* Layer badge */
+        if (cards[4]) {
+            lv_obj_set_pos(cards[4], 6, 176);
+            lv_obj_set_size(cards[4], 268, 58);
+        }
+        layer_inspector_hide();
         break;
-    case 2: /* Off */
+    case 2: /* Layer Map (Live Dynamic Dashboard Layout) */
+        lv_obj_add_flag(bongo_card_obj, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(wpm_card_obj, LV_OBJ_FLAG_HIDDEN);
+        if (cards[1]) lv_obj_add_flag(cards[1], LV_OBJ_FLAG_HIDDEN); /* Layer badge card hidden */
+        if (cards[4]) {
+            lv_obj_set_pos(cards[4], 6, 196);
+            lv_obj_set_size(cards[4], 268, 38);
+        }
+        layer_inspector_show_dashboard(zmk_keymap_highest_layer_active(), layer_inspector_get_is_left_half());
+        break;
+    case 3: /* Off */
     default:
         lv_obj_add_flag(bongo_card_obj, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(wpm_card_obj, LV_OBJ_FLAG_HIDDEN);
+        if (cards[1]) lv_obj_clear_flag(cards[1], LV_OBJ_FLAG_HIDDEN);
+        if (cards[4]) {
+            lv_obj_set_pos(cards[4], 6, 176);
+            lv_obj_set_size(cards[4], 268, 58);
+        }
+        layer_inspector_hide();
         break;
     }
 }
+
 
 static void apply_card_style(lv_obj_t *card) {
     if (!card) {
