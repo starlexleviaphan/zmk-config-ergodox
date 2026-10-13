@@ -83,16 +83,121 @@ bool layer_inspector_is_active(void) {
     return inspector_active;
 }
 
+static lv_obj_t *saved_parent_screen = NULL;
+
+static int layer_inspector_build_ui(lv_obj_t *screen) {
+    if (!screen || inspector_container) {
+        return 0;
+    }
+
+    /* Subscreen Root Container (280x240 px) */
+    inspector_container = lv_obj_create(screen);
+    if (!inspector_container) {
+        LOG_ERR("Failed to create layer inspector container");
+        return -ENOMEM;
+    }
+    lv_obj_set_size(inspector_container, 280, 240);
+    lv_obj_set_pos(inspector_container, 0, 0);
+    lv_obj_set_style_bg_color(inspector_container, lv_color_hex(0x0a0d14), 0);
+    lv_obj_set_style_bg_opa(inspector_container, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(inspector_container, lv_color_hex(0x1f293d), 0);
+    lv_obj_set_style_border_width(inspector_container, 1, 0);
+    lv_obj_set_style_radius(inspector_container, 6, 0);
+    lv_obj_set_style_pad_all(inspector_container, 0, 0);
+    lv_obj_clear_flag(inspector_container, LV_OBJ_FLAG_SCROLLABLE);
+
+    /* Initially Hidden */
+    lv_obj_add_flag(inspector_container, LV_OBJ_FLAG_HIDDEN);
+
+    /* Header Title Label (Top-Left) */
+    header_title_label = lv_label_create(inspector_container);
+    if (header_title_label) {
+        lv_label_set_text(header_title_label, "#0 WORK");
+        lv_obj_set_style_text_color(header_title_label, lv_color_hex(0x00d2ff), 0);
+        lv_obj_align(header_title_label, LV_ALIGN_TOP_LEFT, 10, 6);
+    }
+
+    /* Active Half Banner Label (Top-Right) */
+    header_half_label = lv_label_create(inspector_container);
+    if (header_half_label) {
+        lv_label_set_text(header_half_label, "< LEFT HALF >");
+        lv_obj_set_style_text_color(header_half_label, lv_color_hex(0x00f2fe), 0);
+        lv_obj_align(header_half_label, LV_ALIGN_TOP_RIGHT, -10, 6);
+    }
+
+    /* Top Separator Line */
+    lv_obj_t *sep_top = lv_obj_create(inspector_container);
+    if (sep_top) {
+        lv_obj_set_size(sep_top, 268, 1);
+        lv_obj_set_pos(sep_top, 6, 26);
+        lv_obj_set_style_bg_color(sep_top, lv_color_hex(0x1f293d), 0);
+        lv_obj_set_style_bg_opa(sep_top, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(sep_top, 0, 0);
+    }
+
+    /* 38 Pre-Allocated Key Cells */
+    for (uint8_t i = 0; i < KEYS_PER_HALF; i++) {
+        cell_objs[i] = lv_obj_create(inspector_container);
+        if (!cell_objs[i]) continue;
+        lv_obj_clear_flag(cell_objs[i], LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_style_pad_all(cell_objs[i], 0, 0);
+        lv_obj_set_style_radius(cell_objs[i], 3, 0);
+        lv_obj_set_style_border_width(cell_objs[i], 1, 0);
+        lv_obj_set_style_bg_opa(cell_objs[i], LV_OPA_COVER, 0);
+
+        cell_labels[i] = lv_label_create(cell_objs[i]);
+        if (cell_labels[i]) {
+            lv_obj_center(cell_labels[i]);
+        }
+    }
+
+    /* Bottom Separator Line */
+    lv_obj_t *sep_bot = lv_obj_create(inspector_container);
+    if (sep_bot) {
+        lv_obj_set_size(sep_bot, 268, 1);
+        lv_obj_set_pos(sep_bot, 6, 214);
+        lv_obj_set_style_bg_color(sep_bot, lv_color_hex(0x1f293d), 0);
+        lv_obj_set_style_bg_opa(sep_bot, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(sep_bot, 0, 0);
+    }
+
+    /* Navigation Footer Label */
+    footer_label = lv_label_create(inspector_container);
+    if (footer_label) {
+        lv_label_set_text(footer_label, "W/S:Layer  A/D:Half  ESC:Menu");
+        lv_obj_set_style_text_color(footer_label, lv_color_hex(0x707e94), 0);
+        lv_obj_align(footer_label, LV_ALIGN_BOTTOM_MID, 0, -4);
+    }
+
+    return 0;
+}
+
+int layer_inspector_init(lv_obj_t *screen) {
+    saved_parent_screen = screen;
+    inspector_active = false;
+    return 0;
+}
+
 void layer_inspector_render(void) {
+    /* Runs on zmk_display_work_q(): the only place LVGL objects are mutated. */
+    if (!inspector_active) {
+        if (inspector_container) {
+            lv_obj_add_flag(inspector_container, LV_OBJ_FLAG_HIDDEN);
+        }
+        return;
+    }
+
+    if (!inspector_container) {
+        lv_obj_t *scr = saved_parent_screen ? saved_parent_screen : lv_scr_act();
+        if (scr) {
+            layer_inspector_build_ui(scr);
+        }
+    }
+
     if (!inspector_container) {
         return;
     }
 
-    /* Runs on zmk_display_work_q(): the only place LVGL objects are mutated. */
-    if (!inspector_active) {
-        lv_obj_add_flag(inspector_container, LV_OBJ_FLAG_HIDDEN);
-        return;
-    }
     lv_obj_clear_flag(inspector_container, LV_OBJ_FLAG_HIDDEN);
 
     if (current_layer >= NUM_INSPECTED_LAYERS) {
@@ -142,78 +247,6 @@ void layer_inspector_render(void) {
         lv_obj_set_style_text_color(cell_labels[i], lv_color_hex(style->text), 0);
         lv_label_set_text(cell_labels[i], info->label);
     }
-}
-
-int layer_inspector_init(lv_obj_t *screen) {
-    if (!screen) {
-        return -EINVAL;
-    }
-
-    /* Subscreen Root Container (280x240 px) */
-    inspector_container = lv_obj_create(screen);
-    lv_obj_set_size(inspector_container, 280, 240);
-    lv_obj_set_pos(inspector_container, 0, 0);
-    lv_obj_set_style_bg_color(inspector_container, lv_color_hex(0x0a0d14), 0);
-    lv_obj_set_style_bg_opa(inspector_container, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_color(inspector_container, lv_color_hex(0x1f293d), 0);
-    lv_obj_set_style_border_width(inspector_container, 1, 0);
-    lv_obj_set_style_radius(inspector_container, 6, 0);
-    lv_obj_set_style_pad_all(inspector_container, 0, 0);
-    lv_obj_clear_flag(inspector_container, LV_OBJ_FLAG_SCROLLABLE);
-
-    /* Initially Hidden */
-    lv_obj_add_flag(inspector_container, LV_OBJ_FLAG_HIDDEN);
-
-    /* Header Title Label (Top-Left) */
-    header_title_label = lv_label_create(inspector_container);
-    lv_label_set_text(header_title_label, "#0 WORK");
-    lv_obj_set_style_text_color(header_title_label, lv_color_hex(0x00d2ff), 0);
-    lv_obj_align(header_title_label, LV_ALIGN_TOP_LEFT, 10, 6);
-
-    /* Active Half Banner Label (Top-Right) */
-    header_half_label = lv_label_create(inspector_container);
-    lv_label_set_text(header_half_label, "< LEFT HALF >");
-    lv_obj_set_style_text_color(header_half_label, lv_color_hex(0x00f2fe), 0);
-    lv_obj_align(header_half_label, LV_ALIGN_TOP_RIGHT, -10, 6);
-
-    /* Top Separator Line */
-    lv_obj_t *sep_top = lv_obj_create(inspector_container);
-    lv_obj_set_size(sep_top, 268, 1);
-    lv_obj_set_pos(sep_top, 6, 26);
-    lv_obj_set_style_bg_color(sep_top, lv_color_hex(0x1f293d), 0);
-    lv_obj_set_style_bg_opa(sep_top, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(sep_top, 0, 0);
-
-    /* 38 Pre-Allocated Key Cells */
-    for (uint8_t i = 0; i < KEYS_PER_HALF; i++) {
-        cell_objs[i] = lv_obj_create(inspector_container);
-        lv_obj_clear_flag(cell_objs[i], LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_set_style_pad_all(cell_objs[i], 0, 0);
-        lv_obj_set_style_radius(cell_objs[i], 3, 0);
-        lv_obj_set_style_border_width(cell_objs[i], 1, 0);
-        lv_obj_set_style_bg_opa(cell_objs[i], LV_OPA_COVER, 0);
-
-        cell_labels[i] = lv_label_create(cell_objs[i]);
-        lv_obj_center(cell_labels[i]);
-    }
-
-    /* Bottom Separator Line */
-    lv_obj_t *sep_bot = lv_obj_create(inspector_container);
-    lv_obj_set_size(sep_bot, 268, 1);
-    lv_obj_set_pos(sep_bot, 6, 214);
-    lv_obj_set_style_bg_color(sep_bot, lv_color_hex(0x1f293d), 0);
-    lv_obj_set_style_bg_opa(sep_bot, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(sep_bot, 0, 0);
-
-    /* Navigation Footer Label */
-    footer_label = lv_label_create(inspector_container);
-    lv_label_set_text(footer_label, "W/S:Layer  A/D:Half  ESC:Menu");
-    lv_obj_set_style_text_color(footer_label, lv_color_hex(0x707e94), 0);
-    lv_obj_align(footer_label, LV_ALIGN_BOTTOM_MID, 0, -4);
-
-    inspector_active = false;
-    layer_inspector_render();
-    return 0;
 }
 
 int layer_inspector_show(uint8_t layer, bool is_left_half) {

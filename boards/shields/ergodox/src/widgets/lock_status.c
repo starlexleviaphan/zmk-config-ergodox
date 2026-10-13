@@ -74,31 +74,28 @@ void lock_status_update_cb(struct lock_status_state state) {
     }
 }
 
+static struct lock_status_state last_lock_state = {false, false};
+
 static struct lock_status_state lock_status_get_state(const zmk_event_t *eh) {
-    bool caps = false;
+    if (!eh) {
+        return last_lock_state;
+    }
+
 #if IS_ENABLED(CONFIG_ZMK_HID_INDICATORS)
     const struct zmk_hid_indicators_changed *ev = as_zmk_hid_indicators_changed(eh);
     if (ev) {
-        caps = (ev->indicators & HID_INDICATOR_CAPS_LOCK) != 0;
-    } else {
-        caps = (zmk_hid_indicators_get_current_profile() & HID_INDICATOR_CAPS_LOCK) != 0;
+        last_lock_state.caps_lock = (ev->indicators & HID_INDICATOR_CAPS_LOCK) != 0;
     }
 #endif
 
-    bool caps_w = false;
 #if IS_ENABLED(CONFIG_ZMK_CAPS_WORD)
     const struct zmk_caps_word_state_changed *ev_cw = as_zmk_caps_word_state_changed(eh);
     if (ev_cw) {
-        caps_w = ev_cw->state;
-    } else {
-        caps_w = zmk_caps_word_state();
+        last_lock_state.caps_word = ev_cw->state;
     }
 #endif
 
-    return (struct lock_status_state){
-        .caps_lock = caps,
-        .caps_word = caps_w,
-    };
+    return last_lock_state;
 }
 
 ZMK_DISPLAY_WIDGET_LISTENER(widget_lock_status, struct lock_status_state,

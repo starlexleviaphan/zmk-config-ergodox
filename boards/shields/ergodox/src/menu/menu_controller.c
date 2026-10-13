@@ -110,7 +110,10 @@ static void orientation_apply_handler(struct k_work *work) {
     if (err) {
         LOG_WRN("display_set_orientation failed (err %d)", err);
     }
-    lv_obj_invalidate(lv_scr_act());
+    lv_obj_t *act = lv_scr_act();
+    if (act) {
+        lv_obj_invalidate(act);
+    }
 }
 static K_WORK_DEFINE(orientation_apply_work, orientation_apply_handler);
 
@@ -196,15 +199,6 @@ void menu_controller_set_selected_item(uint8_t idx) {
 
 /* --- Persistent Display Settings (written to flash only on Save & Exit) --- */
 #if IS_ENABLED(CONFIG_SETTINGS)
-static void settings_apply_handler(struct k_work *work) {
-    /* Runs on the display work queue: same path as a menu orientation change */
-    orientation_apply_handler(work);
-    set_screen_brightness(current_brightness, false);
-    k_work_submit_to_queue(zmk_display_work_q(), &menu_ui_work);
-}
-
-static K_WORK_DEFINE(settings_apply_work, settings_apply_handler);
-
 static bool settings_read_u8(size_t len, settings_read_cb read_cb, void *cb_arg, uint8_t *out) {
     uint8_t v;
     if (len != sizeof(v) || read_cb(cb_arg, &v, sizeof(v)) != (ssize_t)sizeof(v)) {
@@ -217,58 +211,47 @@ static bool settings_read_u8(size_t len, settings_read_cb read_cb, void *cb_arg,
 static int display_settings_set(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg) {
     const char *next;
     uint8_t v = 0;
-    bool applied = false;
 
     if (settings_name_steq(name, "brightness", &next) && !next) {
         if (settings_read_u8(len, read_cb, cb_arg, &v) && v >= 10 && v <= 100) {
             current_brightness = v;
-            applied = true;
         } else {
             LOG_WRN("Discarded invalid brightness from settings");
         }
     } else if (settings_name_steq(name, "timeout_s", &next) && !next) {
         uint16_t t;
-        bool found = false;
         if (len == sizeof(t) && read_cb(cb_arg, &t, sizeof(t)) == (ssize_t)sizeof(t)) {
             for (uint8_t i = 0; i < TIMEOUT_OPTIONS_COUNT; i++) {
                 if (timeout_values[i] == t) {
                     current_timeout_idx = i;
-                    found = true;
                     break;
                 }
             }
-        }
-        if (found) {
-            applied = true;
         } else {
             LOG_WRN("Discarded invalid timeout from settings");
         }
     } else if (settings_name_steq(name, "flipped", &next) && !next) {
         if (settings_read_u8(len, read_cb, cb_arg, &v) && v <= 1) {
             current_orientation_flipped = (v != 0);
-            applied = true;
         } else {
             LOG_WRN("Discarded invalid orientation from settings");
         }
     } else if (settings_name_steq(name, "anim_style", &next) && !next) {
         if (settings_read_u8(len, read_cb, cb_arg, &v) && v < ANIM_OPTIONS_COUNT) {
             current_anim_idx = v;
-            applied = true;
         } else {
             LOG_WRN("Discarded invalid animation style from settings");
         }
     } else if (settings_name_steq(name, "theme_id", &next) && !next) {
         if (settings_read_u8(len, read_cb, cb_arg, &v) && v < THEME_OPTIONS_COUNT) {
             current_theme_idx = v;
-            applied = true;
         } else {
             LOG_WRN("Discarded invalid theme from settings");
         }
     }
 
-    if (applied) {
-        k_work_submit_to_queue(zmk_display_work_q(), &settings_apply_work);
-    }
+    /* Note: During early boot settings_load(), variables are populated safely in memory.
+     * Work is NOT submitted to display work queue here because UI objects are not yet created. */
     return 0;
 }
 
@@ -305,6 +288,9 @@ static void render_menu_items(void) {
     }
 
     for (uint8_t i = 0; i < MENU_ITEM_COUNT; i++) {
+        if (!row_containers[i] || !row_labels_left[i] || !row_labels_right[i]) {
+            continue;
+        }
         bool selected = (i == selected_item_idx);
 
         if (selected) {
@@ -737,5 +723,11 @@ int menu_controller_init(lv_obj_t *screen) {
 
     render_menu_items();
     layer_inspector_init(screen);
+
+    /* Safely apply loaded settings to hardware now that display & UI exist */
+    set_screen_brightness(current_brightness, false);
+    if (!current_orientation_flipped) {
+        k_work_submit_to_queue(zmk_display_work_q(), &orientation_apply_work);
+    }
     return 0;
 }
