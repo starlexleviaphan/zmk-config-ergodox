@@ -41,19 +41,116 @@ static struct zmk_widget_dongle_battery_status dongle_battery_status_widget;
 
 /* Root container for active dashboard widgets */
 static lv_obj_t *dashboard_root = NULL;
+static lv_obj_t *cards[5]; /* header, layer, wpm, bongo, footer */
+static uint8_t card_count = 0;
+static lv_obj_t *bongo_card_obj = NULL;
+static lv_obj_t *wpm_card_obj = NULL;
 
 lv_obj_t *zmk_display_get_dashboard_root(void) {
     return dashboard_root;
 }
 
+lv_obj_t *zmk_display_get_bongo_obj(void) {
+    return bongo_card_obj;
+}
+
+lv_obj_t *zmk_display_get_wpm_obj(void) {
+    return wpm_card_obj;
+}
+
+static const struct theme_palette themes[4] = {
+    [0] = { /* Cyberpunk */
+        .bg = 0x0a0d14,
+        .border = 0x1f293d,
+        .accent = 0x00d2ff,
+        .sel_bg = 0x16243b,
+        .text_sel = 0x00f2fe,
+    },
+    [1] = { /* Monokai */
+        .bg = 0x1e1f1c,
+        .border = 0x49483e,
+        .accent = 0xa6e22e,
+        .sel_bg = 0x32352b,
+        .text_sel = 0xe6db74,
+    },
+    [2] = { /* Matrix */
+        .bg = 0x020d04,
+        .border = 0x0a3d12,
+        .accent = 0x00ff41,
+        .sel_bg = 0x052e0a,
+        .text_sel = 0x55ff77,
+    },
+    [3] = { /* Clean */
+        .bg = 0x18181b,
+        .border = 0x3f3f46,
+        .accent = 0x38bdf8,
+        .sel_bg = 0x27272a,
+        .text_sel = 0xf4f4f5,
+    },
+};
+
+const struct theme_palette *zmk_display_get_theme_palette(uint8_t theme_id) {
+    if (theme_id >= 4) {
+        theme_id = 0;
+    }
+    return &themes[theme_id];
+}
+
+void zmk_display_apply_theme(uint8_t theme_id) {
+    if (theme_id >= 4) {
+        theme_id = 0;
+    }
+    const struct theme_palette *pal = &themes[theme_id];
+    for (uint8_t i = 0; i < card_count; i++) {
+        if (cards[i]) {
+            lv_obj_set_style_bg_color(cards[i], lv_color_hex(pal->bg), 0);
+            lv_obj_set_style_border_color(cards[i], lv_color_hex(pal->border), 0);
+        }
+    }
+}
+
+void zmk_display_apply_animation(uint8_t anim_idx) {
+    if (!bongo_card_obj || !wpm_card_obj) {
+        return;
+    }
+    switch (anim_idx) {
+    case 0: /* Bongo Cat */
+        lv_obj_clear_flag(bongo_card_obj, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(wpm_card_obj, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_pos(wpm_card_obj, 6, 102);
+        lv_obj_set_size(wpm_card_obj, 130, 68);
+        break;
+    case 1: /* WPM Gauge (Hero mode: center/right expanded) */
+        lv_obj_add_flag(bongo_card_obj, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(wpm_card_obj, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_pos(wpm_card_obj, 142, 38);
+        lv_obj_set_size(wpm_card_obj, 132, 132);
+        break;
+    case 2: /* Off */
+    default:
+        lv_obj_add_flag(bongo_card_obj, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(wpm_card_obj, LV_OBJ_FLAG_HIDDEN);
+        break;
+    }
+}
+
 static void apply_card_style(lv_obj_t *card) {
+    if (!card) {
+        return;
+    }
     lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_style_bg_color(card, lv_color_hex(0x0a0d14), 0);
+    uint8_t cur_theme = get_active_theme();
+    if (cur_theme >= 4) cur_theme = 0;
+    lv_obj_set_style_bg_color(card, lv_color_hex(themes[cur_theme].bg), 0);
     lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(card, 6, 0);
-    lv_obj_set_style_border_color(card, lv_color_hex(0x1f293d), 0);
+    lv_obj_set_style_border_color(card, lv_color_hex(themes[cur_theme].border), 0);
     lv_obj_set_style_border_width(card, 1, 0);
     lv_obj_set_style_pad_all(card, 2, 0);
+
+    if (card_count < 5) {
+        cards[card_count++] = card;
+    }
 }
 
 lv_obj_t *zmk_display_status_screen(void) {
@@ -90,16 +187,21 @@ lv_obj_t *zmk_display_status_screen(void) {
     zmk_widget_layer_badge_init(&layer_badge_widget, dashboard_root);
     lv_obj_t *layer_obj = zmk_widget_layer_badge_obj(&layer_badge_widget);
     lv_obj_set_pos(layer_obj, 6, 38);
+    apply_card_style(layer_obj);
 
     /* 3. WPM Speedometer Card (130x68 px at x=6, y=102) */
     zmk_widget_wpm_gauge_init(&wpm_gauge_widget, dashboard_root);
     lv_obj_t *wpm_obj = zmk_widget_wpm_gauge_obj(&wpm_gauge_widget);
     lv_obj_set_pos(wpm_obj, 6, 102);
+    apply_card_style(wpm_obj);
+    wpm_card_obj = wpm_obj;
 
     /* 4. Center Right: Typing-Reactive Bongo Cat Mascot Card (132x132 px at x=142, y=38) */
     zmk_widget_bongo_cat_init(&bongo_cat_widget, dashboard_root);
     lv_obj_t *bongo_obj = zmk_widget_bongo_cat_obj(&bongo_cat_widget);
     lv_obj_set_pos(bongo_obj, 142, 38);
+    apply_card_style(bongo_obj);
+    bongo_card_obj = bongo_obj;
 
     /* 5. Footer Card (268x58 px at x=6, y=176): Modifier Status + 3-Channel Battery Monitor */
     lv_obj_t *footer_card = lv_obj_create(dashboard_root);
@@ -129,7 +231,10 @@ lv_obj_t *zmk_display_status_screen(void) {
     lv_obj_align(batt_obj, LV_ALIGN_BOTTOM_MID, 0, -2);
 #endif
 
+    zmk_display_apply_theme(get_active_theme());
+    zmk_display_apply_animation(get_animation_style());
     menu_controller_init(screen);
 
     return screen;
 }
+

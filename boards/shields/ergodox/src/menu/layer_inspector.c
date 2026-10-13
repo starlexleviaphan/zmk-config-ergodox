@@ -8,10 +8,15 @@
 LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
 #include <lvgl.h>
+#include "custom_status_screen.h"
 #include "widgets/layer_badge.h"
 #include "menu_controller.h"
 #include "layer_inspector.h"
 #include "layer_inspector_data.h"
+
+#if IS_ENABLED(CONFIG_LV_FONT_MONTSERRAT_12)
+LV_FONT_DECLARE(lv_font_montserrat_12);
+#endif
 
 #ifndef ARG_UNUSED
 #define ARG_UNUSED(x) (void)(x)
@@ -63,8 +68,9 @@ static volatile bool inspector_active = false;
 static lv_obj_t *inspector_container = NULL;
 static lv_obj_t *header_title_label = NULL;
 static lv_obj_t *header_half_label = NULL;
+static lv_obj_t *sep_top_obj = NULL;
+static lv_obj_t *sep_bot_obj = NULL;
 static lv_obj_t *footer_label = NULL;
-static lv_obj_t *cell_objs[KEYS_PER_HALF];
 static lv_obj_t *cell_labels[KEYS_PER_HALF];
 
 uint8_t layer_inspector_get_current_layer(void) {
@@ -126,39 +132,40 @@ static int layer_inspector_build_ui(lv_obj_t *screen) {
     }
 
     /* Top Separator Line */
-    lv_obj_t *sep_top = lv_obj_create(inspector_container);
-    if (sep_top) {
-        lv_obj_set_size(sep_top, 268, 1);
-        lv_obj_set_pos(sep_top, 6, 26);
-        lv_obj_set_style_bg_color(sep_top, lv_color_hex(0x1f293d), 0);
-        lv_obj_set_style_bg_opa(sep_top, LV_OPA_COVER, 0);
-        lv_obj_set_style_border_width(sep_top, 0, 0);
+    sep_top_obj = lv_obj_create(inspector_container);
+    if (sep_top_obj) {
+        lv_obj_set_size(sep_top_obj, 268, 1);
+        lv_obj_set_pos(sep_top_obj, 6, 26);
+        lv_obj_set_style_bg_color(sep_top_obj, lv_color_hex(0x1f293d), 0);
+        lv_obj_set_style_bg_opa(sep_top_obj, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(sep_top_obj, 0, 0);
     }
 
-    /* 38 Pre-Allocated Key Cells */
+    /* 38 Pre-Allocated Key Cell Labels (Single-object lightweight design) */
     for (uint8_t i = 0; i < KEYS_PER_HALF; i++) {
-        cell_objs[i] = lv_obj_create(inspector_container);
-        if (!cell_objs[i]) continue;
-        lv_obj_clear_flag(cell_objs[i], LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_set_style_pad_all(cell_objs[i], 0, 0);
-        lv_obj_set_style_radius(cell_objs[i], 3, 0);
-        lv_obj_set_style_border_width(cell_objs[i], 1, 0);
-        lv_obj_set_style_bg_opa(cell_objs[i], LV_OPA_COVER, 0);
-
-        cell_labels[i] = lv_label_create(cell_objs[i]);
-        if (cell_labels[i]) {
-            lv_obj_center(cell_labels[i]);
-        }
+        cell_labels[i] = lv_label_create(inspector_container);
+        if (!cell_labels[i]) continue;
+        lv_obj_clear_flag(cell_labels[i], LV_OBJ_FLAG_SCROLLABLE);
+        lv_label_set_long_mode(cell_labels[i], LV_LABEL_LONG_CLIP);
+        lv_obj_set_style_text_align(cell_labels[i], LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_style_pad_all(cell_labels[i], 0, 0);
+        lv_obj_set_style_pad_top(cell_labels[i], 5, 0);
+        lv_obj_set_style_radius(cell_labels[i], 3, 0);
+        lv_obj_set_style_border_width(cell_labels[i], 1, 0);
+        lv_obj_set_style_bg_opa(cell_labels[i], LV_OPA_COVER, 0);
+#if IS_ENABLED(CONFIG_LV_FONT_MONTSERRAT_12)
+        lv_obj_set_style_text_font(cell_labels[i], &lv_font_montserrat_12, 0);
+#endif
     }
 
     /* Bottom Separator Line */
-    lv_obj_t *sep_bot = lv_obj_create(inspector_container);
-    if (sep_bot) {
-        lv_obj_set_size(sep_bot, 268, 1);
-        lv_obj_set_pos(sep_bot, 6, 214);
-        lv_obj_set_style_bg_color(sep_bot, lv_color_hex(0x1f293d), 0);
-        lv_obj_set_style_bg_opa(sep_bot, LV_OPA_COVER, 0);
-        lv_obj_set_style_border_width(sep_bot, 0, 0);
+    sep_bot_obj = lv_obj_create(inspector_container);
+    if (sep_bot_obj) {
+        lv_obj_set_size(sep_bot_obj, 268, 1);
+        lv_obj_set_pos(sep_bot_obj, 6, 214);
+        lv_obj_set_style_bg_color(sep_bot_obj, lv_color_hex(0x1f293d), 0);
+        lv_obj_set_style_bg_opa(sep_bot_obj, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(sep_bot_obj, 0, 0);
     }
 
     /* Navigation Footer Label */
@@ -200,6 +207,19 @@ void layer_inspector_render(void) {
 
     lv_obj_clear_flag(inspector_container, LV_OBJ_FLAG_HIDDEN);
 
+    /* Apply active theme to inspector container and separators */
+    const struct theme_palette *pal = zmk_display_get_theme_palette(get_active_theme());
+    if (pal) {
+        lv_obj_set_style_bg_color(inspector_container, lv_color_hex(pal->bg), 0);
+        lv_obj_set_style_border_color(inspector_container, lv_color_hex(pal->border), 0);
+        if (sep_top_obj) {
+            lv_obj_set_style_bg_color(sep_top_obj, lv_color_hex(pal->border), 0);
+        }
+        if (sep_bot_obj) {
+            lv_obj_set_style_bg_color(sep_bot_obj, lv_color_hex(pal->border), 0);
+        }
+    }
+
     if (current_layer >= NUM_INSPECTED_LAYERS) {
         current_layer = 0;
     }
@@ -225,13 +245,17 @@ void layer_inspector_render(void) {
 
     /* Update 38 Key Cells for the Inspected Half */
     for (uint8_t i = 0; i < KEYS_PER_HALF; i++) {
-        if (!cell_objs[i] || !cell_labels[i]) {
+        if (!cell_labels[i]) {
             continue;
         }
 
         const struct key_geometry *geom = current_is_left_half ? &left_half_geom[i] : &right_half_geom[i];
-        lv_obj_set_pos(cell_objs[i], geom->x, geom->y);
-        lv_obj_set_size(cell_objs[i], geom->w, geom->h);
+        lv_obj_set_pos(cell_labels[i], geom->x, geom->y);
+        lv_obj_set_size(cell_labels[i], geom->w, geom->h);
+
+        /* Center vertically depending on key height */
+        uint8_t pad_t = (geom->h > 25) ? ((geom->h - 12) / 2) : 5;
+        lv_obj_set_style_pad_top(cell_labels[i], pad_t, 0);
 
         uint8_t key_idx = current_is_left_half ? i : (i + KEYS_PER_HALF);
         const struct key_cell_info *info = &layer_keys_data[current_layer][key_idx];
@@ -242,10 +266,10 @@ void layer_inspector_render(void) {
         }
 
         const struct category_style *style = &cat_styles[cat];
-        lv_obj_set_style_bg_color(cell_objs[i], lv_color_hex(style->bg), 0);
-        lv_obj_set_style_border_color(cell_objs[i], lv_color_hex(style->border), 0);
+        lv_obj_set_style_bg_color(cell_labels[i], lv_color_hex(style->bg), 0);
+        lv_obj_set_style_border_color(cell_labels[i], lv_color_hex(style->border), 0);
         lv_obj_set_style_text_color(cell_labels[i], lv_color_hex(style->text), 0);
-        lv_label_set_text(cell_labels[i], info->label);
+        lv_label_set_text_static(cell_labels[i], info->label);
     }
 }
 
