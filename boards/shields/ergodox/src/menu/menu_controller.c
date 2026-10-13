@@ -4,6 +4,8 @@
  */
 
 #include <zephyr/kernel.h>
+#include <zephyr/device.h>
+#include <zephyr/drivers/display.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/settings/settings.h>
 LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
@@ -94,6 +96,24 @@ static lv_obj_t *row_labels_right[MENU_ITEM_COUNT];
 static void menu_ui_update_handler(struct k_work *work);
 static K_WORK_DEFINE(menu_ui_work, menu_ui_update_handler);
 
+/* Orientation is applied on the display work queue via the Zephyr display
+ * API, mirroring YADS screen_rotate_init.c (horizontal: FLIPPED -> 90, else 270). */
+static void orientation_apply_handler(struct k_work *work) {
+    ARG_UNUSED(work);
+    const struct device *d = DEVICE_DT_GET(DT_CHOSEN(zephyr_display));
+    if (!device_is_ready(d)) {
+        LOG_WRN("Display device not ready, orientation not applied");
+        return;
+    }
+    int err = display_set_orientation(d, current_orientation_flipped ? DISPLAY_ORIENTATION_ROTATED_90
+                                                                      : DISPLAY_ORIENTATION_ROTATED_270);
+    if (err) {
+        LOG_WRN("display_set_orientation failed (err %d)", err);
+    }
+    lv_obj_invalidate(lv_scr_act());
+}
+static K_WORK_DEFINE(orientation_apply_work, orientation_apply_handler);
+
 
 /* Settings Accessors */
 void set_screen_brightness(uint8_t percent) {
@@ -122,10 +142,7 @@ uint16_t get_sleep_timeout(void) {
 
 void set_screen_orientation(bool flipped) {
     current_orientation_flipped = flipped;
-    lv_disp_t *disp = lv_disp_get_default();
-    if (disp) {
-        lv_disp_set_rotation(disp, flipped ? LV_DISP_ROT_180 : LV_DISP_ROT_NONE);
-    }
+    k_work_submit_to_queue(zmk_display_work_q(), &orientation_apply_work);
 }
 
 bool get_screen_orientation(void) {
@@ -177,14 +194,11 @@ void menu_controller_set_selected_item(uint8_t idx) {
 /* --- Persistent Display Settings (written to flash only on Save & Exit) --- */
 #if IS_ENABLED(CONFIG_SETTINGS)
 static void settings_apply_handler(struct k_work *work) {
-    ARG_UNUSED(work);
-    /* Runs on the display work queue: safe to touch LVGL */
-    lv_disp_t *disp = lv_disp_get_default();
-    if (disp) {
-        lv_disp_set_rotation(disp, current_orientation_flipped ? LV_DISP_ROT_180 : LV_DISP_ROT_NONE);
-    }
+    /* Runs on the display work queue: same path as a menu orientation change */
+    orientation_apply_handler(work);
     k_work_submit_to_queue(zmk_display_work_q(), &menu_ui_work);
 }
+
 static K_WORK_DEFINE(settings_apply_work, settings_apply_handler);
 
 static bool settings_read_u8(size_t len, settings_read_cb read_cb, void *cb_arg, uint8_t *out) {
