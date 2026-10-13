@@ -451,21 +451,26 @@ void menu_controller_set_state(enum screen_state new_state) {
     switch (new_state) {
     case SCREEN_STATE_DASHBOARD:
         menu_is_active = false;
-        zmk_hid_keyboard_clear();
-        zmk_endpoints_send_report(HID_USAGE_KEY);
+        if (zmk_keymap_layer_active(14)) {
+            zmk_keymap_layer_deactivate(14);
+        }
         if (zmk_keymap_layer_active(6)) {
             zmk_keymap_layer_deactivate(6);
         }
+        zmk_hid_keyboard_clear();
+        zmk_endpoints_send_report(HID_USAGE_KEY);
         break;
 
     case SCREEN_STATE_MENU:
         menu_is_active = true;
+        zmk_keymap_layer_activate(14, false);
         zmk_hid_keyboard_clear();
         zmk_endpoints_send_report(HID_USAGE_KEY);
         break;
 
     case SCREEN_STATE_LAYER_MAP:
         menu_is_active = true;
+        zmk_keymap_layer_activate(14, false);
         zmk_hid_keyboard_clear();
         zmk_endpoints_send_report(HID_USAGE_KEY);
         layer_inspector_show(zmk_keymap_highest_layer_active(), true);
@@ -484,6 +489,9 @@ void menu_controller_toggle(void) {
     last_toggle_timestamp = now;
 
     if (current_screen_state == SCREEN_STATE_DASHBOARD) {
+        zmk_keymap_layer_activate(14, false);
+        zmk_hid_keyboard_clear();
+        zmk_endpoints_send_report(HID_USAGE_KEY);
         menu_controller_set_state(SCREEN_STATE_MENU);
     } else {
         menu_controller_set_state(SCREEN_STATE_DASHBOARD);
@@ -618,8 +626,8 @@ int menu_position_state_changed_listener(const zmk_event_t *eh) {
         return ZMK_EV_EVENT_BUBBLE;
     }
 
-    /* Toggle trigger: position 1 on Layer 6 (MOUS) */
-    if (ev->position == POS_F21_L6 && zmk_keymap_highest_layer_active() == 6) {
+    /* Toggle trigger: position 1 on Layer 6 (MOUS), or while menu is active */
+    if (ev->position == POS_F21_L6 && (zmk_keymap_highest_layer_active() == 6 || menu_is_active)) {
         if (ev->state) {
             menu_controller_toggle();
             zmk_hid_keyboard_clear();
