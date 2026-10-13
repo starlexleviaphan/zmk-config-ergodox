@@ -39,7 +39,6 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 /* ErgoDox Matrix Key Positions */
 #define POS_ESC         0
 #define POS_F21_L6      1
-#define POS_ENTER_L     14
 #define POS_W           16
 #define POS_A           29
 #define POS_S           30
@@ -53,6 +52,7 @@ static enum screen_state current_screen_state = SCREEN_STATE_DASHBOARD;
 static bool menu_is_active = false;
 static uint8_t selected_item_idx = 0;
 static uint32_t last_nav_timestamp = 0;
+static uint32_t last_toggle_timestamp = 0;
 static enum menu_nav_action last_nav_action = (enum menu_nav_action)-1;
 
 /* Configurable Parameters */
@@ -168,6 +168,16 @@ lv_obj_t *menu_controller_get_root(void) {
     return menu_root_container;
 }
 
+uint8_t menu_controller_get_selected_item(void) {
+    return selected_item_idx;
+}
+
+void menu_controller_set_selected_item(uint8_t idx) {
+    if (idx < MENU_ITEM_COUNT) {
+        selected_item_idx = idx;
+    }
+}
+
 /* UI Redraw Routine */
 static void render_menu_items(void) {
     if (!menu_root_container) {
@@ -253,54 +263,72 @@ static void render_menu_items(void) {
 
 static void menu_ui_update_handler(struct k_work *work) {
     ARG_UNUSED(work);
-    render_menu_items();
-}
-
-/* State Transitions */
-void menu_controller_set_state(enum screen_state new_state) {
     lv_obj_t *dash = zmk_display_get_dashboard_root();
 
-    current_screen_state = new_state;
-
-    switch (new_state) {
+    switch (current_screen_state) {
     case SCREEN_STATE_DASHBOARD:
-        menu_is_active = false;
         if (menu_root_container) {
             lv_obj_add_flag(menu_root_container, LV_OBJ_FLAG_HIDDEN);
         }
         if (dash) {
             lv_obj_clear_flag(dash, LV_OBJ_FLAG_HIDDEN);
         }
-        zmk_hid_keyboard_clear();
         break;
 
     case SCREEN_STATE_MENU:
-        menu_is_active = true;
         if (dash) {
             lv_obj_add_flag(dash, LV_OBJ_FLAG_HIDDEN);
         }
         if (menu_root_container) {
             lv_obj_clear_flag(menu_root_container, LV_OBJ_FLAG_HIDDEN);
         }
-        zmk_hid_keyboard_clear();
         render_menu_items();
         break;
 
     case SCREEN_STATE_LAYER_MAP:
-        menu_is_active = true;
         if (menu_root_container) {
             lv_obj_add_flag(menu_root_container, LV_OBJ_FLAG_HIDDEN);
         }
         if (dash) {
             lv_obj_add_flag(dash, LV_OBJ_FLAG_HIDDEN);
         }
-        zmk_hid_keyboard_clear();
-        layer_inspector_show(zmk_keymap_highest_layer_active(), true);
         break;
     }
 }
 
+/* State Transitions */
+void menu_controller_set_state(enum screen_state new_state) {
+    current_screen_state = new_state;
+
+    switch (new_state) {
+    case SCREEN_STATE_DASHBOARD:
+        menu_is_active = false;
+        zmk_hid_keyboard_clear();
+        break;
+
+    case SCREEN_STATE_MENU:
+        menu_is_active = true;
+        zmk_hid_keyboard_clear();
+        break;
+
+    case SCREEN_STATE_LAYER_MAP:
+        menu_is_active = true;
+        zmk_hid_keyboard_clear();
+        layer_inspector_show(zmk_keymap_highest_layer_active(), true);
+        break;
+    }
+
+    /* Dispatch all LVGL mutations safely to display thread */
+    k_work_submit_to_queue(zmk_display_work_q(), &menu_ui_work);
+}
+
 void menu_controller_toggle(void) {
+    uint32_t now = k_uptime_get_32();
+    if ((now - last_toggle_timestamp) < 200) {
+        return;
+    }
+    last_toggle_timestamp = now;
+
     if (current_screen_state == SCREEN_STATE_DASHBOARD) {
         menu_controller_set_state(SCREEN_STATE_MENU);
     } else {
@@ -418,12 +446,8 @@ void menu_controller_handle_nav(enum menu_nav_action action) {
         return;
     }
 
-    /* Schedule UI update on display work queue */
-    if (k_is_in_isr()) {
-        k_work_submit_to_queue(zmk_display_work_q(), &menu_ui_work);
-    } else {
-        render_menu_items();
-    }
+    /* Dispatch all LVGL mutations safely to display thread */
+    k_work_submit_to_queue(zmk_display_work_q(), &menu_ui_work);
 }
 
 /* Event Listeners */
@@ -456,7 +480,7 @@ int menu_position_state_changed_listener(const zmk_event_t *eh) {
         menu_controller_handle_nav(MENU_NAV_DEC);
     } else if (ev->position == POS_D) {
         menu_controller_handle_nav(MENU_NAV_INC);
-    } else if (ev->position == POS_ENTER_L || ev->position == POS_ENTER_R ||
+    } else if (ev->position == POS_ENTER_R ||
                ev->position == POS_SPACE_L || ev->position == POS_SPACE_R) {
         menu_controller_handle_nav(MENU_NAV_SELECT);
     } else if (ev->position == POS_ESC) {

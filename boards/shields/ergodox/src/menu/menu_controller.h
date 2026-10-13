@@ -43,6 +43,8 @@ void menu_controller_set_state(enum screen_state new_state);
 void menu_controller_toggle(void);
 void menu_controller_handle_nav(enum menu_nav_action action);
 lv_obj_t *menu_controller_get_root(void);
+uint8_t menu_controller_get_selected_item(void);
+void menu_controller_set_selected_item(uint8_t idx);
 
 /* Display settings accessors */
 void set_screen_brightness(uint8_t percent);
