@@ -16,6 +16,8 @@ if(CONFIG_SHIELD_ERGODOX_DONGLE_DISPLAY)
   zephyr_library_include_directories(${DONGLE_SCREEN_SRC_DIR})
   zephyr_library_include_directories(${DONGLE_SCREEN_SRC_DIR}/include)
   zephyr_library_include_directories(${DONGLE_SCREEN_SRC_DIR}/src)
+  zephyr_library_include_directories(src)
+  zephyr_library_include_directories(src/widgets)
 
   zephyr_library_sources(
     ${DONGLE_SCREEN_SRC_DIR}/src/brightness.c
@@ -23,6 +25,8 @@ if(CONFIG_SHIELD_ERGODOX_DONGLE_DISPLAY)
     ${DONGLE_SCREEN_SRC_DIR}/src/screen_rotate_init.c
     ${DONGLE_SCREEN_SRC_DIR}/src/widgets/output_status.c
     src/widgets/battery_status.c
+    src/widgets/lock_status.c
+    src/widgets/layer_badge.c
     ${DONGLE_SCREEN_SRC_DIR}/src/widgets/layer_status.c
     ${DONGLE_SCREEN_SRC_DIR}/src/widgets/wpm_status.c
     ${DONGLE_SCREEN_SRC_DIR}/src/widgets/mod_status.c
