@@ -7,6 +7,9 @@ if(CONFIG_SHIELD_ERGODOX_DONGLE_DISPLAY)
 
   zephyr_library()
   zephyr_library_sources(${ZEPHYR_BASE}/misc/empty_file.c)
+  zephyr_library_include_directories(src)
+  zephyr_library_include_directories(src/widgets)
+  zephyr_library_include_directories(src/menu)
   zephyr_library_include_directories(${ZEPHYR_LVGL_MODULE_DIR})
   zephyr_library_include_directories(${ZEPHYR_BASE}/lib/gui/lvgl/)
   zephyr_library_include_directories(${ZEPHYR_BASE}/drivers)
@@ -16,9 +19,6 @@ if(CONFIG_SHIELD_ERGODOX_DONGLE_DISPLAY)
   zephyr_library_include_directories(${DONGLE_SCREEN_SRC_DIR})
   zephyr_library_include_directories(${DONGLE_SCREEN_SRC_DIR}/include)
   zephyr_library_include_directories(${DONGLE_SCREEN_SRC_DIR}/src)
-  zephyr_library_include_directories(src)
-  zephyr_library_include_directories(src/widgets)
-  zephyr_library_include_directories(src/menu)
 
   zephyr_library_sources(
     ${DONGLE_SCREEN_SRC_DIR}/src/brightness.c

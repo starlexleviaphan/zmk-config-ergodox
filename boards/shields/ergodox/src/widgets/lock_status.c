@@ -11,6 +11,11 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #include <zmk/event_manager.h>
 #include <zmk/events/hid_indicators_changed.h>
 #include <zmk/hid_indicators.h>
+#include <dt-bindings/zmk/hid_indicators.h>
+
+#ifndef HID_INDICATOR_CAPS_LOCK
+#define HID_INDICATOR_CAPS_LOCK (1 << 1)
+#endif
 
 #if IS_ENABLED(CONFIG_ZMK_CAPS_WORD)
 #include <zmk/events/caps_word_state_changed.h>
@@ -75,9 +80,9 @@ static struct lock_status_state lock_status_get_state(const zmk_event_t *eh) {
 #if IS_ENABLED(CONFIG_ZMK_HID_INDICATORS)
     const struct zmk_hid_indicators_changed *ev = as_zmk_hid_indicators_changed(eh);
     if (ev) {
-        caps = (ev->indicators & ZMK_LED_CAPSLOCK) != 0;
+        caps = (ev->indicators & HID_INDICATOR_CAPS_LOCK) != 0;
     } else {
-        caps = (zmk_hid_indicators_get() & ZMK_LED_CAPSLOCK) != 0;
+        caps = (zmk_hid_indicators_get_current_profile() & HID_INDICATOR_CAPS_LOCK) != 0;
     }
 #endif
 

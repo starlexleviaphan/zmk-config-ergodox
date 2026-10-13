@@ -42,7 +42,9 @@ enum screen_state menu_controller_get_state(void);
 void menu_controller_set_state(enum screen_state new_state);
 void menu_controller_toggle(void);
 void menu_controller_handle_nav(enum menu_nav_action action);
+/* Root container getters */
 lv_obj_t *menu_controller_get_root(void);
+lv_obj_t *zmk_display_get_dashboard_root(void);
 uint8_t menu_controller_get_selected_item(void);
 void menu_controller_set_selected_item(uint8_t idx);
 
