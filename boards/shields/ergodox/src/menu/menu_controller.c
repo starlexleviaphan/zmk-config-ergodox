@@ -66,7 +66,7 @@ static const char * const timeout_labels[] = {"Off", "60s", "180s", "300s", "600
 #define TIMEOUT_OPTIONS_COUNT ((uint8_t)(sizeof(timeout_values) / sizeof(timeout_values[0])))
 static uint8_t current_timeout_idx = 4; /* default 600s */
 
-static bool current_orientation_flipped = true; /* default 180° */
+static bool current_orientation_flipped = true; /* default 180 deg */
 
 static const char * const anim_labels[] = {"Bongo Cat", "WPM Gauge", "Off"};
 #define ANIM_OPTIONS_COUNT ((uint8_t)(sizeof(anim_labels) / sizeof(anim_labels[0])))
@@ -78,13 +78,13 @@ static uint8_t current_theme_idx = 0; /* default Cyberpunk */
 
 /* Menu Titles */
 static const char * const menu_titles[MENU_ITEM_COUNT] = {
-    [MENU_ITEM_BRIGHTNESS]   = "[ Яркость ]",
-    [MENU_ITEM_TIMEOUT]      = "[ Таймаут сна ]",
-    [MENU_ITEM_ORIENTATION]  = "[ Ориентация ]",
-    [MENU_ITEM_ANIMATION]    = "[ Анимация ]",
-    [MENU_ITEM_THEME]        = "[ Тема ]",
-    [MENU_ITEM_LAYER_MAP]    = "[ Карта слоев ]",
-    [MENU_ITEM_SAVE_EXIT]    = "[ Сохранить и выйти ]",
+    [MENU_ITEM_BRIGHTNESS]   = "Brightness",
+    [MENU_ITEM_TIMEOUT]      = "Sleep Timeout",
+    [MENU_ITEM_ORIENTATION]  = "Orientation",
+    [MENU_ITEM_ANIMATION]    = "Animation",
+    [MENU_ITEM_THEME]        = "Theme",
+    [MENU_ITEM_LAYER_MAP]    = "Layer Map",
+    [MENU_ITEM_SAVE_EXIT]    = "Save & Exit",
 };
 
 /* LVGL UI Objects */
@@ -328,9 +328,9 @@ static void render_menu_items(void) {
             break;
         case MENU_ITEM_ORIENTATION:
             if (selected) {
-                lv_label_set_text_fmt(row_labels_right[i], "< %s >", current_orientation_flipped ? "180°" : "Normal");
+                lv_label_set_text_fmt(row_labels_right[i], "< %s >", current_orientation_flipped ? "180 deg" : "Normal");
             } else {
-                lv_label_set_text_fmt(row_labels_right[i], "%s", current_orientation_flipped ? "180°" : "Normal");
+                lv_label_set_text_fmt(row_labels_right[i], "%s", current_orientation_flipped ? "180 deg" : "Normal");
             }
             break;
         case MENU_ITEM_ANIMATION:
@@ -719,7 +719,7 @@ int menu_controller_init(lv_obj_t *screen) {
     lv_obj_t *footer_label = lv_label_create(menu_root_container);
     lv_label_set_text(footer_label, "W/S:Nav  A/D:Adj  RET:Sel  ESC:Exit");
     lv_obj_set_style_text_color(footer_label, lv_color_hex(0x707e94), 0);
-    lv_obj_align(footer_label, LV_ALIGN_BOTTOM_MID, 0, -4);
+    lv_obj_align(footer_label, LV_ALIGN_BOTTOM_MID, 0, -7);
 
     render_menu_items();
     layer_inspector_init(screen);
