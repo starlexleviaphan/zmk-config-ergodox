@@ -337,5 +337,22 @@
                                                                     &trans            &out OUT_TOG    
             >;
         };
+
+        // ---------------------------------------------------------------------------------------------------------------------------------
+        // Layer 14: MENU
+        // ---------------------------------------------------------------------------------------------------------------------------------
+        layer_14 {
+            display-name = "MENU";
+            bindings = <
+            &none           &none           &none           &none           &none           &none           &none             &none           &none           &none           &none           &none           &none           &none           
+            &none           &none           &none           &none           &none           &none           &none             &none           &none           &none           &none           &none           &none           &none           
+            &none           &none           &none           &none           &none           &none           &none             &none           &none           &none           &none           &none           &none           &none           
+            &none           &none           &none           &none           &none           &none                             &none           &none           &none           &none           &none           &none           
+            &none           &none           &none           &none           &none                                             &none           &none           &none           &none           &none           
+                                                          &none           &none             &none           &none           
+                                                &none           &none           &none             &none           &none           &none           
+                                                                    &none             &none           
+            >;
+        };
     };
 };
