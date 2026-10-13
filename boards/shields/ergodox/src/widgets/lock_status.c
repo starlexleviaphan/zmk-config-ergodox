@@ -11,7 +11,6 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #include <zmk/event_manager.h>
 #include <zmk/events/hid_indicators_changed.h>
 #include <zmk/hid_indicators.h>
-#include <dt-bindings/zmk/hid_indicators.h>
 
 #ifndef HID_INDICATOR_CAPS_LOCK
 #define HID_INDICATOR_CAPS_LOCK (1 << 1)
