@@ -166,7 +166,7 @@ static int layer_inspector_build_ui(lv_obj_t *screen) {
     if (footer_label) {
         lv_label_set_text(footer_label, "W/S:Layer  A/D:Half  ESC:Menu");
         lv_obj_set_style_text_color(footer_label, lv_color_hex(0x707e94), 0);
-        lv_obj_align(footer_label, LV_ALIGN_BOTTOM_MID, 0, -4);
+        lv_obj_align(footer_label, LV_ALIGN_BOTTOM_MID, 0, -7);
     }
 
     return 0;

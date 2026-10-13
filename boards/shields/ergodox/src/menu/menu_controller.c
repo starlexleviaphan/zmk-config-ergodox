@@ -451,7 +451,7 @@ void menu_controller_toggle(void) {
 /* Menu Navigation Input Handler */
 void menu_controller_handle_nav(enum menu_nav_action action) {
     uint32_t now = k_uptime_get_32();
-    if (action == last_nav_action && (now - last_nav_timestamp) < 60) {
+    if ((now - last_nav_timestamp) < 180) {
         return;
     }
     last_nav_action = action;
