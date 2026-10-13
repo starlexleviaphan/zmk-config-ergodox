@@ -17,6 +17,7 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
 #include "custom_status_screen.h"
 #include "menu_controller.h"
+#include "layer_inspector.h"
 
 #ifndef ARG_UNUSED
 #define ARG_UNUSED(x) (void)(x)
@@ -92,12 +93,6 @@ static lv_obj_t *row_labels_right[MENU_ITEM_COUNT];
 static void menu_ui_update_handler(struct k_work *work);
 static K_WORK_DEFINE(menu_ui_work, menu_ui_update_handler);
 
-/* Weak stub for Layer Inspector (Task 7) */
-__attribute__((weak)) int layer_inspector_show(uint8_t layer, bool is_left_half) {
-    ARG_UNUSED(layer);
-    ARG_UNUSED(is_left_half);
-    return 0;
-}
 
 /* Settings Accessors */
 void set_screen_brightness(uint8_t percent) {
@@ -273,6 +268,7 @@ static void menu_ui_update_handler(struct k_work *work) {
         if (dash) {
             lv_obj_clear_flag(dash, LV_OBJ_FLAG_HIDDEN);
         }
+        layer_inspector_render();
         break;
 
     case SCREEN_STATE_MENU:
@@ -282,6 +278,7 @@ static void menu_ui_update_handler(struct k_work *work) {
         if (menu_root_container) {
             lv_obj_clear_flag(menu_root_container, LV_OBJ_FLAG_HIDDEN);
         }
+        layer_inspector_render();
         render_menu_items();
         break;
 
@@ -292,12 +289,16 @@ static void menu_ui_update_handler(struct k_work *work) {
         if (dash) {
             lv_obj_add_flag(dash, LV_OBJ_FLAG_HIDDEN);
         }
+        layer_inspector_render();
         break;
     }
 }
 
 /* State Transitions */
 void menu_controller_set_state(enum screen_state new_state) {
+    if (current_screen_state == SCREEN_STATE_LAYER_MAP && new_state != SCREEN_STATE_LAYER_MAP) {
+        layer_inspector_hide();
+    }
     current_screen_state = new_state;
 
     switch (new_state) {
@@ -344,6 +345,12 @@ void menu_controller_handle_nav(enum menu_nav_action action) {
     }
     last_nav_action = action;
     last_nav_timestamp = now;
+
+    if (current_screen_state == SCREEN_STATE_LAYER_MAP) {
+        layer_inspector_handle_nav(action);
+        k_work_submit_to_queue(zmk_display_work_q(), &menu_ui_work);
+        return;
+    }
 
     switch (action) {
     case MENU_NAV_UP:
@@ -603,5 +610,6 @@ int menu_controller_init(lv_obj_t *screen) {
     lv_obj_align(footer_label, LV_ALIGN_BOTTOM_MID, 0, -4);
 
     render_menu_items();
+    layer_inspector_init(screen);
     return 0;
 }

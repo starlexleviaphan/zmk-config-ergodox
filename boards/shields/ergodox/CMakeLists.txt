@@ -24,6 +24,7 @@ if(CONFIG_SHIELD_ERGODOX_DONGLE_DISPLAY)
     ${DONGLE_SCREEN_SRC_DIR}/src/brightness.c
     src/custom_status_screen.c
     src/menu/menu_controller.c
+    src/menu/layer_inspector.c
     ${DONGLE_SCREEN_SRC_DIR}/src/screen_rotate_init.c
     ${DONGLE_SCREEN_SRC_DIR}/src/widgets/output_status.c
     src/widgets/battery_status.c
