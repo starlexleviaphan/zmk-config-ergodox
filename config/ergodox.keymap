@@ -208,7 +208,7 @@
         layer_6 {
             display-name = "MOUS";
             bindings = <
-            &kp ESC         &trans          &trans          &trans          &trans          &trans          &trans            &trans          &trans          &trans          &trans          &trans          &trans          &kp BSPC        
+            &kp ESC         &kp F21         &trans          &trans          &trans          &trans          &trans            &trans          &trans          &trans          &trans          &trans          &trans          &kp BSPC        
             &trans          &mkp MB4        &mkp MCLK       &mkp RCLK       &mkp LCLK       &trans          &kp PG_UP         &trans          &msc SCRL_UP    &msc SCRL_LEFT  &mmv MOVE_UP    &msc SCRL_RIGHT &kp C_VOL_DN    &kp C_VOL_UP    
             &mkp MB5        &kp LALT        &kp LSHFT       &kp LCTRL       &kp LGUI        &tog 6          &kp PG_DN         &trans          &msc SCRL_DOWN  &mmv MOVE_LEFT  &mmv MOVE_DOWN  &mmv MOVE_RIGHT &kp C_STOP      &kp C_MUTE      
             &trans          &kp Z           &kp X           &kp C           &kp V           &trans                            &kp C_PREV      &kp C_RW        &kp C_PP        &kp C_FF        &kp C_NEXT      &kp RSHFT       
