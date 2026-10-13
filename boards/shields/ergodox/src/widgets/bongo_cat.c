@@ -51,9 +51,13 @@ static bool paw_l_down = false;
 static bool paw_r_down = false;
 static uint8_t bongo_wpm = 0;
 
-static struct k_work update_paws_work;
-static struct k_work_delayable lift_paw_l_work;
-static struct k_work_delayable lift_paw_r_work;
+static void bongo_cat_update_paws_handler(struct k_work *work);
+static void bongo_cat_lift_l_handler(struct k_work *work);
+static void bongo_cat_lift_r_handler(struct k_work *work);
+
+static K_WORK_DEFINE(update_paws_work, bongo_cat_update_paws_handler);
+static K_WORK_DELAYABLE_DEFINE(lift_paw_l_work, bongo_cat_lift_l_handler);
+static K_WORK_DELAYABLE_DEFINE(lift_paw_r_work, bongo_cat_lift_r_handler);
 
 static const char *get_cat_face(uint8_t wpm) {
     if (wpm < 30) {
@@ -177,7 +181,7 @@ ZMK_SUBSCRIPTION(widget_bongo_cat, zmk_wpm_state_changed);
 
 static int position_state_changed_listener(const zmk_event_t *eh) {
     const struct zmk_position_state_changed *ev = as_zmk_position_state_changed(eh);
-    if (!ev || !ev->state) {
+    if (!ev || !ev->state || ev->position >= 76 || sys_slist_is_empty(&bongo_cat_widgets)) {
         return 0;
     }
 
@@ -233,14 +237,6 @@ int zmk_widget_bongo_cat_init(struct zmk_widget_bongo_cat *widget, lv_obj_t *par
     lv_obj_set_style_text_color(widget->paw_r, lv_color_hex(0x9aa0a6), 0);
     lv_obj_align(widget->paw_r, LV_ALIGN_BOTTOM_RIGHT, -16, -16);
     lv_label_set_text(widget->paw_r, "\\");
-
-    static bool work_inited = false;
-    if (!work_inited) {
-        k_work_init(&update_paws_work, bongo_cat_update_paws_handler);
-        k_work_init_delayable(&lift_paw_l_work, bongo_cat_lift_l_handler);
-        k_work_init_delayable(&lift_paw_r_work, bongo_cat_lift_r_handler);
-        work_inited = true;
-    }
 
     sys_slist_append(&bongo_cat_widgets, &widget->node);
 
