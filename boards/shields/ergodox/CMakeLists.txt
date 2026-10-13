@@ -21,7 +21,7 @@ if(CONFIG_SHIELD_ERGODOX_DONGLE_DISPLAY)
 
   zephyr_library_sources(
     ${DONGLE_SCREEN_SRC_DIR}/src/brightness.c
-    ${DONGLE_SCREEN_SRC_DIR}/src/custom_status_screen.c
+    src/custom_status_screen.c
     ${DONGLE_SCREEN_SRC_DIR}/src/screen_rotate_init.c
     ${DONGLE_SCREEN_SRC_DIR}/src/widgets/output_status.c
     src/widgets/battery_status.c
