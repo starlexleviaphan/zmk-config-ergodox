@@ -88,13 +88,13 @@ ZMK_SUBSCRIPTION(widget_wpm_gauge, zmk_wpm_state_changed);
 int zmk_widget_wpm_gauge_init(struct zmk_widget_wpm_gauge *widget, lv_obj_t *parent) {
     widget->obj = lv_obj_create(parent);
     lv_obj_clear_flag(widget->obj, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_size(widget->obj, 106, 52);
+    lv_obj_set_size(widget->obj, 130, 68);
     lv_obj_set_style_radius(widget->obj, 6, 0);
-    lv_obj_set_style_bg_color(widget->obj, lv_color_hex(0x12151c), 0);
+    lv_obj_set_style_bg_color(widget->obj, lv_color_hex(0x0a0d14), 0);
     lv_obj_set_style_bg_opa(widget->obj, LV_OPA_COVER, 0);
     lv_obj_set_style_pad_all(widget->obj, 4, 0);
     lv_obj_set_style_border_width(widget->obj, 1, 0);
-    lv_obj_set_style_border_color(widget->obj, lv_color_hex(0x2d3139), 0);
+    lv_obj_set_style_border_color(widget->obj, lv_color_hex(0x1f293d), 0);
 
     /* Arc Speedometer Gauge (0..120 WPM) */
     widget->arc = lv_arc_create(widget->obj);
@@ -109,12 +109,12 @@ int zmk_widget_wpm_gauge_init(struct zmk_widget_wpm_gauge *widget, lv_obj_t *par
     lv_obj_set_style_arc_color(widget->arc, lv_color_hex(0x222630), LV_PART_MAIN);
     lv_obj_set_style_arc_width(widget->arc, 4, LV_PART_INDICATOR);
     lv_obj_set_style_arc_color(widget->arc, lv_color_hex(0x00d2ff), LV_PART_INDICATOR);
-    lv_obj_align(widget->arc, LV_ALIGN_LEFT_MID, 2, 0);
+    lv_obj_align(widget->arc, LV_ALIGN_LEFT_MID, 6, 0);
 
     /* WPM Text Readout */
     widget->label = lv_label_create(widget->obj);
     lv_obj_set_style_text_color(widget->label, lv_color_hex(0x00d2ff), 0);
-    lv_obj_align(widget->label, LV_ALIGN_RIGHT_MID, -4, 0);
+    lv_obj_align(widget->label, LV_ALIGN_RIGHT_MID, -8, 0);
     lv_label_set_text(widget->label, "WPM: 0");
 
     sys_slist_append(&wpm_gauge_widgets, &widget->node);

@@ -26,7 +26,7 @@ if(CONFIG_SHIELD_ERGODOX_DONGLE_DISPLAY)
     src/menu/menu_controller.c
     src/menu/layer_inspector.c
     ${DONGLE_SCREEN_SRC_DIR}/src/screen_rotate_init.c
-    ${DONGLE_SCREEN_SRC_DIR}/src/widgets/output_status.c
+    src/widgets/output_status.c
     src/widgets/battery_status.c
     src/widgets/lock_status.c
     src/widgets/layer_badge.c

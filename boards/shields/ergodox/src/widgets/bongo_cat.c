@@ -92,11 +92,11 @@ static void render_bongo_cat(struct zmk_widget_bongo_cat *widget) {
     if (widget->paw_l) {
         if (paw_l_down) {
             lv_label_set_text(widget->paw_l, "o");
-            lv_obj_align(widget->paw_l, LV_ALIGN_BOTTOM_LEFT, 20, -5);
+            lv_obj_align(widget->paw_l, LV_ALIGN_CENTER, -22, 22);
             lv_obj_set_style_text_color(widget->paw_l, lv_color_hex(0x38ef7d), 0);
         } else {
             lv_label_set_text(widget->paw_l, "/");
-            lv_obj_align(widget->paw_l, LV_ALIGN_BOTTOM_LEFT, 16, -16);
+            lv_obj_align(widget->paw_l, LV_ALIGN_CENTER, -26, 12);
             lv_obj_set_style_text_color(widget->paw_l, lv_color_hex(0x9aa0a6), 0);
         }
     }
@@ -105,11 +105,11 @@ static void render_bongo_cat(struct zmk_widget_bongo_cat *widget) {
     if (widget->paw_r) {
         if (paw_r_down) {
             lv_label_set_text(widget->paw_r, "o");
-            lv_obj_align(widget->paw_r, LV_ALIGN_BOTTOM_RIGHT, -20, -5);
+            lv_obj_align(widget->paw_r, LV_ALIGN_CENTER, 22, 22);
             lv_obj_set_style_text_color(widget->paw_r, lv_color_hex(0x38ef7d), 0);
         } else {
             lv_label_set_text(widget->paw_r, "\\");
-            lv_obj_align(widget->paw_r, LV_ALIGN_BOTTOM_RIGHT, -16, -16);
+            lv_obj_align(widget->paw_r, LV_ALIGN_CENTER, 26, 12);
             lv_obj_set_style_text_color(widget->paw_r, lv_color_hex(0x9aa0a6), 0);
         }
     }
@@ -122,7 +122,7 @@ static void render_bongo_cat(struct zmk_widget_bongo_cat *widget) {
 
     /* Container dynamic border */
     bool active = (paw_l_down || paw_r_down);
-    lv_obj_set_style_border_color(widget->obj, active ? lv_color_hex(0x00d2ff) : lv_color_hex(0x2d3139), 0);
+    lv_obj_set_style_border_color(widget->obj, active ? lv_color_hex(0x00d2ff) : lv_color_hex(0x1f293d), 0);
     lv_obj_set_style_border_width(widget->obj, active ? 2 : 1, 0);
 }
 
@@ -203,25 +203,25 @@ ZMK_SUBSCRIPTION(bongo_cat_key_tracker, zmk_position_state_changed);
 int zmk_widget_bongo_cat_init(struct zmk_widget_bongo_cat *widget, lv_obj_t *parent) {
     widget->obj = lv_obj_create(parent);
     lv_obj_clear_flag(widget->obj, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_size(widget->obj, 106, 52);
+    lv_obj_set_size(widget->obj, 132, 132);
     lv_obj_set_style_radius(widget->obj, 6, 0);
-    lv_obj_set_style_bg_color(widget->obj, lv_color_hex(0x12151c), 0);
+    lv_obj_set_style_bg_color(widget->obj, lv_color_hex(0x0a0d14), 0);
     lv_obj_set_style_bg_opa(widget->obj, LV_OPA_COVER, 0);
     lv_obj_set_style_pad_all(widget->obj, 2, 0);
     lv_obj_set_style_border_width(widget->obj, 1, 0);
-    lv_obj_set_style_border_color(widget->obj, lv_color_hex(0x2d3139), 0);
+    lv_obj_set_style_border_color(widget->obj, lv_color_hex(0x1f293d), 0);
 
     widget->canvas = NULL;
 
     /* Head & Face label */
     widget->head_label = lv_label_create(widget->obj);
-    lv_obj_align(widget->head_label, LV_ALIGN_TOP_MID, 0, 2);
+    lv_obj_align(widget->head_label, LV_ALIGN_CENTER, 0, -18);
     lv_obj_set_style_text_color(widget->head_label, lv_color_hex(0x00d2ff), 0);
 
     /* Desk representation */
     widget->desk = lv_obj_create(widget->obj);
-    lv_obj_set_size(widget->desk, 76, 3);
-    lv_obj_align(widget->desk, LV_ALIGN_BOTTOM_MID, 0, -4);
+    lv_obj_set_size(widget->desk, 90, 3);
+    lv_obj_align(widget->desk, LV_ALIGN_CENTER, 0, 26);
     lv_obj_set_style_bg_color(widget->desk, lv_color_hex(0x2d3139), 0);
     lv_obj_set_style_bg_opa(widget->desk, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(widget->desk, 0, 0);
@@ -230,12 +230,12 @@ int zmk_widget_bongo_cat_init(struct zmk_widget_bongo_cat *widget, lv_obj_t *par
     /* Left and Right Paws */
     widget->paw_l = lv_label_create(widget->obj);
     lv_obj_set_style_text_color(widget->paw_l, lv_color_hex(0x9aa0a6), 0);
-    lv_obj_align(widget->paw_l, LV_ALIGN_BOTTOM_LEFT, 16, -16);
+    lv_obj_align(widget->paw_l, LV_ALIGN_CENTER, -26, 12);
     lv_label_set_text(widget->paw_l, "/");
 
     widget->paw_r = lv_label_create(widget->obj);
     lv_obj_set_style_text_color(widget->paw_r, lv_color_hex(0x9aa0a6), 0);
-    lv_obj_align(widget->paw_r, LV_ALIGN_BOTTOM_RIGHT, -16, -16);
+    lv_obj_align(widget->paw_r, LV_ALIGN_CENTER, 26, 12);
     lv_label_set_text(widget->paw_r, "\\");
 
     sys_slist_append(&bongo_cat_widgets, &widget->node);

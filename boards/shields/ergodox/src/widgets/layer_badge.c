@@ -86,11 +86,6 @@ static void set_layer_badge_state(struct zmk_widget_layer_badge *widget, struct 
     /* Layer name styled with accent color */
     lv_obj_set_style_text_color(widget->label, accent, 0);
     lv_label_set_text_fmt(widget->label, "#%u %s", layer, info->name);
-
-    /* Description subtitle */
-    if (widget->desc_label) {
-        lv_label_set_text(widget->desc_label, info->desc);
-    }
 }
 
 void layer_badge_update_cb(struct layer_badge_state state) {
@@ -114,19 +109,16 @@ ZMK_SUBSCRIPTION(widget_layer_badge, zmk_layer_state_changed);
 int zmk_widget_layer_badge_init(struct zmk_widget_layer_badge *widget, lv_obj_t *parent) {
     widget->obj = lv_obj_create(parent);
     lv_obj_clear_flag(widget->obj, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_size(widget->obj, 140, 48);
+    lv_obj_set_size(widget->obj, 130, 60);
     lv_obj_set_style_radius(widget->obj, 6, 0);
-    lv_obj_set_style_bg_color(widget->obj, lv_color_hex(0x12151c), 0);
+    lv_obj_set_style_bg_color(widget->obj, lv_color_hex(0x0a0d14), 0);
     lv_obj_set_style_bg_opa(widget->obj, LV_OPA_COVER, 0);
     lv_obj_set_style_pad_all(widget->obj, 4, 0);
     lv_obj_set_style_border_width(widget->obj, 2, 0);
 
     widget->label = lv_label_create(widget->obj);
-    lv_obj_align(widget->label, LV_ALIGN_TOP_LEFT, 6, 3);
-
-    widget->desc_label = lv_label_create(widget->obj);
-    lv_obj_set_style_text_color(widget->desc_label, lv_color_hex(0x9aa0a6), 0);
-    lv_obj_align(widget->desc_label, LV_ALIGN_BOTTOM_LEFT, 6, -3);
+    lv_obj_center(widget->label);
+    widget->desc_label = NULL;
 
     sys_slist_append(&widgets, &widget->node);
 
