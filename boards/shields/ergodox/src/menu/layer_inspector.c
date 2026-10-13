@@ -408,9 +408,7 @@ int layer_inspector_show_dashboard(uint8_t layer, bool is_left_half) {
 void layer_inspector_hide(void) {
     inspector_active = false;
     is_dashboard_mode = false;
-    if (inspector_container) {
-        lv_obj_add_flag(inspector_container, LV_OBJ_FLAG_HIDDEN);
-    }
+    k_work_submit_to_queue(zmk_display_work_q(), &layer_inspector_work);
 }
 
 void layer_inspector_handle_nav(enum menu_nav_action action) {

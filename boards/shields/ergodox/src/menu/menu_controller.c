@@ -443,7 +443,7 @@ static void menu_ui_update_handler(struct k_work *work) {
 
 /* State Transitions */
 void menu_controller_set_state(enum screen_state new_state) {
-    if (current_screen_state == SCREEN_STATE_LAYER_MAP && new_state != SCREEN_STATE_LAYER_MAP) {
+    if (new_state != SCREEN_STATE_LAYER_MAP) {
         layer_inspector_hide();
     }
     current_screen_state = new_state;
