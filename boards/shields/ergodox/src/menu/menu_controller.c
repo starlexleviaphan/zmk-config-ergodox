@@ -115,14 +115,17 @@ static void orientation_apply_handler(struct k_work *work) {
 static K_WORK_DEFINE(orientation_apply_work, orientation_apply_handler);
 
 
+extern void set_screen_brightness(uint8_t value, bool ambient);
+
 /* Settings Accessors */
-void set_screen_brightness(uint8_t percent) {
+void menu_controller_set_brightness(uint8_t percent) {
     if (percent < 10) percent = 10;
     if (percent > 100) percent = 100;
     current_brightness = percent;
+    set_screen_brightness(percent, false);
 }
 
-uint8_t get_screen_brightness(void) {
+uint8_t menu_controller_get_brightness(void) {
     return current_brightness;
 }
 
@@ -196,6 +199,7 @@ void menu_controller_set_selected_item(uint8_t idx) {
 static void settings_apply_handler(struct k_work *work) {
     /* Runs on the display work queue: same path as a menu orientation change */
     orientation_apply_handler(work);
+    set_screen_brightness(current_brightness, false);
     k_work_submit_to_queue(zmk_display_work_q(), &menu_ui_work);
 }
 
@@ -488,7 +492,7 @@ void menu_controller_handle_nav(enum menu_nav_action action) {
             if (current_brightness > 10) {
                 current_brightness -= 10;
             }
-            set_screen_brightness(current_brightness);
+            menu_controller_set_brightness(current_brightness);
             break;
         case MENU_ITEM_TIMEOUT:
             if (current_timeout_idx > 0) {
@@ -526,7 +530,7 @@ void menu_controller_handle_nav(enum menu_nav_action action) {
             if (current_brightness < 100) {
                 current_brightness += 10;
             }
-            set_screen_brightness(current_brightness);
+            menu_controller_set_brightness(current_brightness);
             break;
         case MENU_ITEM_TIMEOUT:
             if (current_timeout_idx + 1 < TIMEOUT_OPTIONS_COUNT) {

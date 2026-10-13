@@ -49,8 +49,8 @@ uint8_t menu_controller_get_selected_item(void);
 void menu_controller_set_selected_item(uint8_t idx);
 
 /* Display settings accessors */
-void set_screen_brightness(uint8_t percent);
-uint8_t get_screen_brightness(void);
+void menu_controller_set_brightness(uint8_t percent);
+uint8_t menu_controller_get_brightness(void);
 
 void set_sleep_timeout(uint16_t timeout_s);
 uint16_t get_sleep_timeout(void);
