@@ -9,6 +9,7 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
 #include <lvgl.h>
 #include "custom_status_screen.h"
+#include "menu/menu_controller.h"
 
 #if IS_ENABLED(CONFIG_DONGLE_SCREEN_OUTPUT_ACTIVE)
 #include "widgets/output_status.h"
@@ -146,6 +147,8 @@ lv_obj_t *zmk_display_status_screen(void) {
     lv_obj_set_style_pad_all(batt_obj, 0, 0);
     lv_obj_align(batt_obj, LV_ALIGN_BOTTOM_MID, 0, 0);
 #endif
+
+    menu_controller_init(screen);
 
     return screen;
 }
