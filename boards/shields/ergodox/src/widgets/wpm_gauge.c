@@ -35,14 +35,24 @@ uint32_t zmk_widget_wpm_gauge_get_color(uint8_t wpm) {
     }
 }
 
+uint8_t zmk_widget_wpm_gauge_smooth(uint8_t current_smooth, uint8_t raw_wpm) {
+    if (raw_wpm == 0) {
+        return (current_smooth > 3) ? (current_smooth - 3) : 0;
+    }
+    return (uint8_t)((raw_wpm * 1 + current_smooth * 3) / 4);
+}
+
 static void set_wpm_gauge_state(struct zmk_widget_wpm_gauge *widget, struct wpm_gauge_state state) {
     if (!widget || !widget->obj || !widget->arc || !widget->label) {
         return;
     }
 
-    uint8_t wpm = state.wpm;
-    uint8_t clamped = (wpm > 120) ? 120 : wpm;
-    uint32_t color_hex = zmk_widget_wpm_gauge_get_color(wpm);
+    static uint8_t smooth_wpm = 0;
+    smooth_wpm = zmk_widget_wpm_gauge_smooth(smooth_wpm, state.wpm);
+    widget->smooth_wpm = smooth_wpm;
+
+    uint8_t clamped = (smooth_wpm > 120) ? 120 : smooth_wpm;
+    uint32_t color_hex = zmk_widget_wpm_gauge_get_color(smooth_wpm);
     lv_color_t accent = lv_color_hex(color_hex);
 
     /* Update gauge arc value & color */
@@ -50,12 +60,12 @@ static void set_wpm_gauge_state(struct zmk_widget_wpm_gauge *widget, struct wpm_
     lv_obj_set_style_arc_color(widget->arc, accent, LV_PART_INDICATOR);
 
     /* Update dynamic text readout & glow */
-    lv_label_set_text_fmt(widget->label, "WPM: %u", (unsigned int)wpm);
+    lv_label_set_text_fmt(widget->label, "WPM: %u", (unsigned int)smooth_wpm);
     lv_obj_set_style_text_color(widget->label, accent, 0);
 
     /* Container accent border */
     lv_obj_set_style_border_color(widget->obj, accent, 0);
-    lv_obj_set_style_border_width(widget->obj, (wpm > 0) ? 2 : 1, 0);
+    lv_obj_set_style_border_width(widget->obj, (smooth_wpm > 0) ? 2 : 1, 0);
 }
 
 void wpm_gauge_update_cb(struct wpm_gauge_state state) {
@@ -117,6 +127,7 @@ int zmk_widget_wpm_gauge_init(struct zmk_widget_wpm_gauge *widget, lv_obj_t *par
     lv_obj_align(widget->label, LV_ALIGN_RIGHT_MID, -8, 0);
     lv_label_set_text(widget->label, "WPM: 0");
 
+    widget->smooth_wpm = 0;
     sys_slist_append(&wpm_gauge_widgets, &widget->node);
 
     struct wpm_gauge_state initial_state = wpm_gauge_get_state(NULL);
