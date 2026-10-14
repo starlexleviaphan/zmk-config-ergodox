@@ -221,7 +221,7 @@ static int layer_inspector_build_ui(lv_obj_t *screen) {
         lv_obj_set_style_text_align(cell_labels[i], LV_TEXT_ALIGN_CENTER, 0);
         lv_obj_set_style_pad_all(cell_labels[i], 0, 0);
         lv_obj_set_style_pad_top(cell_labels[i], 5, 0);
-        lv_obj_set_style_radius(cell_labels[i], 3, 0);
+        lv_obj_set_style_radius(cell_labels[i], 2, 0);
         lv_obj_set_style_border_width(cell_labels[i], 1, 0);
         lv_obj_set_style_bg_opa(cell_labels[i], LV_OPA_COVER, 0);
 #if IS_ENABLED(CONFIG_LV_FONT_MONTSERRAT_12)
@@ -362,7 +362,7 @@ void layer_inspector_render(void) {
         lv_obj_set_size(cell_labels[i], geom->w, geom->h);
 
         /* Center vertically depending on key height */
-        uint8_t pad_t = (geom->h > 25) ? ((geom->h - 12) / 2) : 5;
+        uint8_t pad_t = (geom->h > 12) ? ((geom->h - 12) / 2) : 0;
         lv_obj_set_style_pad_top(cell_labels[i], pad_t, 0);
 
         uint8_t key_idx = current_is_left_half ? i : (i + KEYS_PER_HALF);
