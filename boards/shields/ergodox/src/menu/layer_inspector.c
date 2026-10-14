@@ -25,7 +25,7 @@ LV_FONT_DECLARE(lv_font_montserrat_12);
 #define ARG_UNUSED(x) (void)(x)
 #endif
 
-#define NUM_INSPECTED_LAYERS 14
+#define NUM_INSPECTED_LAYERS 15
 #define KEYS_PER_HALF 38
 
 static inline bool is_right_key(uint32_t pos) {
@@ -333,8 +333,8 @@ void layer_inspector_render(void) {
     }
 
     /* Update Header Layer Name & Accent Color */
-    const char *layer_name = zmk_widget_layer_badge_get_name(current_layer);
-    uint32_t layer_color = zmk_widget_layer_badge_get_color(current_layer);
+    const char *layer_name = (current_layer == 14) ? "MENU" : zmk_widget_layer_badge_get_name(current_layer);
+    uint32_t layer_color = (current_layer == 14) ? 0x707e94 : zmk_widget_layer_badge_get_color(current_layer);
     if (header_title_label) {
         lv_obj_set_style_text_color(header_title_label, lv_color_hex(layer_color), 0);
         lv_label_set_text_fmt(header_title_label, "#%u %s", current_layer, layer_name);
@@ -376,6 +376,7 @@ void layer_inspector_render(void) {
         const struct category_style *style = &cat_styles[cat];
         lv_obj_set_style_bg_color(cell_labels[i], lv_color_hex(style->bg), 0);
         lv_obj_set_style_border_color(cell_labels[i], lv_color_hex(style->border), 0);
+        lv_obj_set_style_border_width(cell_labels[i], (cat == KEY_CAT_LAYER) ? 2 : 1, 0);
         lv_obj_set_style_text_color(cell_labels[i], lv_color_hex(style->text), 0);
         lv_label_set_text_static(cell_labels[i], info->label);
     }
