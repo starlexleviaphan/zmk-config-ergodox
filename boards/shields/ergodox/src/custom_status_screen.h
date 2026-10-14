@@ -13,6 +13,8 @@ struct theme_palette {
     uint32_t accent;     /* Selected row border & primary accent */
     uint32_t sel_bg;     /* Selected row background */
     uint32_t text_sel;   /* Selected row text color */
+    uint32_t text_unsel; /* Unselected text color */
+    uint32_t screen_bg;  /* Root screen background */
 };
 
 lv_obj_t *zmk_display_status_screen(void);

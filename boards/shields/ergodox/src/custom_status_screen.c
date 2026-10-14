@@ -61,13 +61,15 @@ lv_obj_t *zmk_display_get_wpm_obj(void) {
     return wpm_card_obj;
 }
 
-static const struct theme_palette themes[4] = {
+static const struct theme_palette themes[6] = {
     [0] = { /* Cyberpunk */
         .bg = 0x0a0d14,
         .border = 0x1f293d,
         .accent = 0x00d2ff,
         .sel_bg = 0x16243b,
         .text_sel = 0x00f2fe,
+        .text_unsel = 0x8a99ad,
+        .screen_bg = 0x000000,
     },
     [1] = { /* Monokai */
         .bg = 0x1e1f1c,
@@ -75,6 +77,8 @@ static const struct theme_palette themes[4] = {
         .accent = 0xa6e22e,
         .sel_bg = 0x32352b,
         .text_sel = 0xe6db74,
+        .text_unsel = 0x90908a,
+        .screen_bg = 0x141412,
     },
     [2] = { /* Matrix */
         .bg = 0x020d04,
@@ -82,28 +86,53 @@ static const struct theme_palette themes[4] = {
         .accent = 0x00ff41,
         .sel_bg = 0x052e0a,
         .text_sel = 0x55ff77,
+        .text_unsel = 0x2e7d32,
+        .screen_bg = 0x000501,
     },
-    [3] = { /* Clean */
+    [3] = { /* Clean Dark */
         .bg = 0x18181b,
         .border = 0x3f3f46,
         .accent = 0x38bdf8,
         .sel_bg = 0x27272a,
         .text_sel = 0xf4f4f5,
+        .text_unsel = 0xa1a1aa,
+        .screen_bg = 0x09090b,
+    },
+    [4] = { /* Paper Light */
+        .bg = 0xffffff,
+        .border = 0xcfd8dc,
+        .accent = 0x0284c7,
+        .sel_bg = 0xe0f2fe,
+        .text_sel = 0x0369a1,
+        .text_unsel = 0x475569,
+        .screen_bg = 0xf1f5f9,
+    },
+    [5] = { /* Solarized Light */
+        .bg = 0xfdf6e3,
+        .border = 0xdcd5c2,
+        .accent = 0x268bd2,
+        .sel_bg = 0xeee8d5,
+        .text_sel = 0x073642,
+        .text_unsel = 0x657b83,
+        .screen_bg = 0xf5eed9,
     },
 };
 
 const struct theme_palette *zmk_display_get_theme_palette(uint8_t theme_id) {
-    if (theme_id >= 4) {
+    if (theme_id >= 6) {
         theme_id = 0;
     }
     return &themes[theme_id];
 }
 
 void zmk_display_apply_theme(uint8_t theme_id) {
-    if (theme_id >= 4) {
+    if (theme_id >= 6) {
         theme_id = 0;
     }
     const struct theme_palette *pal = &themes[theme_id];
+    if (dashboard_root) {
+        lv_obj_set_style_bg_color(dashboard_root, lv_color_hex(pal->screen_bg), 0);
+    }
     for (uint8_t i = 0; i < card_count; i++) {
         if (cards[i]) {
             lv_obj_set_style_bg_color(cards[i], lv_color_hex(pal->bg), 0);

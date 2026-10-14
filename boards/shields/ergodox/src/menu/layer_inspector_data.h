@@ -62,13 +62,16 @@ static const struct key_geometry left_half_geom[38] = {
     [30] = { .x = 93, .y = 136, .w = 29, .h = 26 },
     [31] = { .x = 122, .y = 136, .w = 29, .h = 26 },
 
-    /* Thumb Cluster (x: 216..274, 7px separation margin from main cluster) */
-    [32] = { .x = 216, .y = 92, .w = 28, .h = 24 },
-    [33] = { .x = 246, .y = 92, .w = 28, .h = 24 },
-    [34] = { .x = 216, .y = 118, .w = 28, .h = 24 },
-    [35] = { .x = 216, .y = 144, .w = 28, .h = 42 },
-    [36] = { .x = 246, .y = 144, .w = 28, .h = 42 },
-    [37] = { .x = 246, .y = 118, .w = 28, .h = 24 },
+    /* Thumb Cluster (3 physical columns matching ErgoDox hardware) */
+    /* Col 1 (inner 2u): Key 35 */
+    [35] = { .x = 216, .y = 114, .w = 18, .h = 50 },
+    /* Col 2 (mid): Key 32 (1u top), Key 36 (2u bot) */
+    [32] = { .x = 236, .y = 88, .w = 18, .h = 24 },
+    [36] = { .x = 236, .y = 114, .w = 18, .h = 50 },
+    /* Col 3 (outer): Key 33 (1u top), Key 34 (1u mid), Key 37 (1u bot) */
+    [33] = { .x = 256, .y = 88, .w = 18, .h = 24 },
+    [34] = { .x = 256, .y = 114, .w = 18, .h = 24 },
+    [37] = { .x = 256, .y = 140, .w = 18, .h = 24 },
 };
 
 static const struct key_geometry right_half_geom[38] = {
@@ -114,13 +117,16 @@ static const struct key_geometry right_half_geom[38] = {
     [30] = { .x = 217, .y = 136, .w = 29, .h = 26 },
     [31] = { .x = 246, .y = 136, .w = 29, .h = 26 },
 
-    /* Thumb Cluster (x: 6..64, 8px separation margin from main cluster) */
-    [32] = { .x = 6, .y = 92, .w = 28, .h = 24 },
-    [33] = { .x = 36, .y = 92, .w = 28, .h = 24 },
-    [34] = { .x = 6, .y = 118, .w = 28, .h = 24 },
-    [35] = { .x = 36, .y = 118, .w = 28, .h = 24 },
-    [36] = { .x = 6, .y = 144, .w = 28, .h = 42 },
-    [37] = { .x = 36, .y = 144, .w = 28, .h = 42 },
+    /* Thumb Cluster (3 physical columns matching ErgoDox hardware) */
+    /* Col 1 (outer): Key 32 (1u top), Key 34 (1u mid), Key 35 (1u bot) */
+    [32] = { .x = 6, .y = 88, .w = 18, .h = 24 },
+    [34] = { .x = 6, .y = 114, .w = 18, .h = 24 },
+    [35] = { .x = 6, .y = 140, .w = 18, .h = 24 },
+    /* Col 2 (mid): Key 33 (1u top), Key 36 (2u bot) */
+    [33] = { .x = 26, .y = 88, .w = 18, .h = 24 },
+    [36] = { .x = 26, .y = 114, .w = 18, .h = 50 },
+    /* Col 3 (inner 2u): Key 37 */
+    [37] = { .x = 46, .y = 114, .w = 18, .h = 50 },
 };
 
 static const struct key_cell_info layer_keys_data[15][76] = {

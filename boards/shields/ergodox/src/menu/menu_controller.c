@@ -74,7 +74,7 @@ static const char * const anim_labels[] = {"Bongo Cat", "WPM Gauge", "Layer Map"
 static uint8_t current_anim_idx = 0; /* default Bongo Cat */
 
 
-static const char * const theme_labels[] = {"Cyberpunk", "Monokai", "Matrix", "Clean"};
+static const char * const theme_labels[] = {"Cyberpunk", "Monokai", "Matrix", "Clean Dark", "Paper Light", "Solarized Light"};
 #define THEME_OPTIONS_COUNT ((uint8_t)(sizeof(theme_labels) / sizeof(theme_labels[0])))
 static uint8_t current_theme_idx = 0; /* default Cyberpunk */
 
@@ -318,6 +318,20 @@ static void render_menu_items(void) {
 
     const struct theme_palette *pal = zmk_display_get_theme_palette(current_theme_idx);
 
+    if (pal) {
+        lv_obj_set_style_bg_color(menu_root_container, lv_color_hex(pal->screen_bg), 0);
+        lv_obj_set_style_border_color(menu_root_container, lv_color_hex(pal->border), 0);
+        if (menu_header_label) {
+            lv_obj_set_style_text_color(menu_header_label, lv_color_hex(pal->accent), 0);
+        }
+        if (menu_sep_top) {
+            lv_obj_set_style_bg_color(menu_sep_top, lv_color_hex(pal->border), 0);
+        }
+        if (menu_sep_bot) {
+            lv_obj_set_style_bg_color(menu_sep_bot, lv_color_hex(pal->border), 0);
+        }
+    }
+
     for (uint8_t i = 0; i < MENU_ITEM_COUNT; i++) {
         if (!row_containers[i] || !row_labels_left[i] || !row_labels_right[i]) {
             continue;
@@ -336,8 +350,8 @@ static void render_menu_items(void) {
         } else {
             lv_obj_set_style_bg_opa(row_containers[i], LV_OPA_TRANSP, 0);
             lv_obj_set_style_border_width(row_containers[i], 0, 0);
-            lv_obj_set_style_text_color(row_labels_left[i], lv_color_hex(0x8a99ad), 0);
-            lv_obj_set_style_text_color(row_labels_right[i], lv_color_hex(0x8a99ad), 0);
+            lv_obj_set_style_text_color(row_labels_left[i], lv_color_hex(pal ? pal->text_unsel : 0x8a99ad), 0);
+            lv_obj_set_style_text_color(row_labels_right[i], lv_color_hex(pal ? pal->text_unsel : 0x8a99ad), 0);
             lv_label_set_text_fmt(row_labels_left[i], "  %s", menu_titles[i]);
         }
 
