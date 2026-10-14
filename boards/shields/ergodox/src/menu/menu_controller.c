@@ -463,14 +463,14 @@ void menu_controller_set_state(enum screen_state new_state) {
 
     case SCREEN_STATE_MENU:
         menu_is_active = true;
-        zmk_keymap_layer_activate(14, false);
+        zmk_keymap_layer_activate(14);
         zmk_hid_keyboard_clear();
         zmk_endpoints_send_report(HID_USAGE_KEY);
         break;
 
     case SCREEN_STATE_LAYER_MAP:
         menu_is_active = true;
-        zmk_keymap_layer_activate(14, false);
+        zmk_keymap_layer_activate(14);
         zmk_hid_keyboard_clear();
         zmk_endpoints_send_report(HID_USAGE_KEY);
         layer_inspector_show(zmk_keymap_highest_layer_active(), true);
@@ -489,7 +489,7 @@ void menu_controller_toggle(void) {
     last_toggle_timestamp = now;
 
     if (current_screen_state == SCREEN_STATE_DASHBOARD) {
-        zmk_keymap_layer_activate(14, false);
+        zmk_keymap_layer_activate(14);
         zmk_hid_keyboard_clear();
         zmk_endpoints_send_report(HID_USAGE_KEY);
         menu_controller_set_state(SCREEN_STATE_MENU);

@@ -8,6 +8,7 @@
 LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
 #include <lvgl.h>
+#include <zmk/keymap.h>
 #include "custom_status_screen.h"
 #include "menu/menu_controller.h"
 #include "menu/layer_inspector.h"
