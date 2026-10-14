@@ -22,3 +22,4 @@ lv_obj_t *zmk_widget_layer_badge_obj(struct zmk_widget_layer_badge *widget);
 uint32_t zmk_widget_layer_badge_get_color(uint8_t layer);
 const char *zmk_widget_layer_badge_get_name(uint8_t layer);
 const char *zmk_widget_layer_badge_get_desc(uint8_t layer);
+void zmk_widget_layer_badge_apply_theme(uint8_t theme_id);

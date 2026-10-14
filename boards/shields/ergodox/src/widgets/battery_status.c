@@ -20,6 +20,9 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
 #include "widgets/battery_status.h"
 #include "brightness.h"
+#include "custom_status_screen.h"
+
+static uint8_t current_theme_id = 0;
 
 #define NUM_PERIPHERALS 3
 
@@ -149,42 +152,77 @@ static void init_peripheral_tracking(void) {
 }
 
 static void draw_battery(lv_obj_t *canvas, int8_t level) {
+    bool is_light = (current_theme_id >= 4);
+    const struct theme_palette *pal = zmk_display_get_theme_palette(current_theme_id);
+    lv_color_t bg_color = pal ? lv_color_hex(pal->bg) : (is_light ? lv_color_hex(0xffffff) : lv_color_hex(0x0a0d14));
+
+    /* Always clear canvas to card background color first */
+    lv_canvas_fill_bg(canvas, bg_color, LV_OPA_COVER);
+
+    lv_draw_rect_dsc_t rect_dsc;
+    lv_draw_rect_dsc_init(&rect_dsc);
+    rect_dsc.bg_opa = LV_OPA_COVER;
+
     if (level < 1) {
-        lv_canvas_fill_bg(canvas, lv_palette_main(LV_PALETTE_RED), LV_OPA_COVER);
+        /* Disconnected: subtle dashed outline */
+        lv_color_t border_color = is_light ? lv_color_hex(0x94a3b8) : lv_color_hex(0x475569);
+        rect_dsc.bg_color = border_color;
+        lv_canvas_draw_rect(canvas, 0, 0, 48, BAR_HEIGHT, &rect_dsc);
+        lv_canvas_draw_rect(canvas, 48, 1, 3, BAR_HEIGHT - 2, &rect_dsc);
+
+        /* Hollow interior */
+        rect_dsc.bg_color = bg_color;
+        lv_canvas_draw_rect(canvas, 1, 1, 46, BAR_HEIGHT - 2, &rect_dsc);
+
+        /* Soften outer corners */
+        lv_canvas_set_px(canvas, 0, 0, bg_color);
+        lv_canvas_set_px(canvas, 0, BAR_HEIGHT - 1, bg_color);
+        lv_canvas_set_px(canvas, 47, 0, bg_color);
+        lv_canvas_set_px(canvas, 47, BAR_HEIGHT - 1, bg_color);
         return;
     }
 
-    lv_color_t border_color = (level <= 10) ? lv_palette_main(LV_PALETTE_YELLOW) : lv_color_white();
-    lv_canvas_fill_bg(canvas, border_color, LV_OPA_COVER);
+    /* Connected battery colors */
+    lv_color_t border_color = is_light ? lv_color_hex(0x1e293b) : lv_color_hex(0xe2e8f0);
+    lv_color_t uncharged_color = is_light ? lv_color_hex(0xe2e8f0) : lv_color_hex(0x1e293b);
+    lv_color_t fill_color;
 
-    int inner_w = 46;
-    int filled_w = (level * inner_w) / 100;
-    if (filled_w > inner_w) filled_w = inner_w;
-    int uncharged_w = inner_w - filled_w;
-
-    if (uncharged_w > 0) {
-        lv_draw_rect_dsc_t rect_dsc;
-        lv_draw_rect_dsc_init(&rect_dsc);
-        rect_dsc.bg_color = lv_color_black();
-        rect_dsc.bg_opa = LV_OPA_COVER;
-        lv_canvas_draw_rect(canvas, 1 + filled_w, 1, uncharged_w, 4, &rect_dsc);
+    if (level <= 10) {
+        fill_color = lv_color_hex(0xef4444); /* Red */
+        border_color = lv_color_hex(0xef4444);
+    } else if (level <= 25) {
+        fill_color = lv_color_hex(0xf59e0b); /* Amber */
+    } else {
+        fill_color = is_light ? lv_color_hex(0x16a34a) : lv_color_hex(0x22c55e); /* Vibrant Green */
     }
 
-    // Anti-aliased / rounded corners
-    lv_canvas_set_px(canvas, 0, 0, lv_color_black());
-    lv_canvas_set_px(canvas, 0, BAR_HEIGHT - 1, lv_color_black());
-    lv_canvas_set_px(canvas, BAR_WIDTH - 1, 0, lv_color_black());
-    lv_canvas_set_px(canvas, BAR_WIDTH - 1, BAR_HEIGHT - 1, lv_color_black());
+    /* Draw body & terminal nub */
+    rect_dsc.bg_color = border_color;
+    lv_canvas_draw_rect(canvas, 0, 0, 48, BAR_HEIGHT, &rect_dsc);
+    lv_canvas_draw_rect(canvas, 48, 1, 3, BAR_HEIGHT - 2, &rect_dsc);
 
-    // Terminal nub on positive (right) side
-    lv_canvas_set_px(canvas, BAR_WIDTH - 2, 0, lv_color_black());
-    lv_canvas_set_px(canvas, BAR_WIDTH - 2, BAR_HEIGHT - 1, lv_color_black());
-    lv_canvas_set_px(canvas, BAR_WIDTH - 1, 1, lv_color_black());
-    lv_canvas_set_px(canvas, BAR_WIDTH - 1, BAR_HEIGHT - 2, lv_color_black());
+    /* Uncharged background track */
+    rect_dsc.bg_color = uncharged_color;
+    lv_canvas_draw_rect(canvas, 1, 1, 46, BAR_HEIGHT - 2, &rect_dsc);
+
+    /* Filled charge bar */
+    int filled_w = (level * 46) / 100;
+    if (filled_w > 46) filled_w = 46;
+    if (filled_w > 0) {
+        rect_dsc.bg_color = fill_color;
+        lv_canvas_draw_rect(canvas, 1, 1, filled_w, BAR_HEIGHT - 2, &rect_dsc);
+    }
+
+    /* Soften outer corners */
+    lv_canvas_set_px(canvas, 0, 0, bg_color);
+    lv_canvas_set_px(canvas, 0, BAR_HEIGHT - 1, bg_color);
+    lv_canvas_set_px(canvas, 47, 0, bg_color);
+    lv_canvas_set_px(canvas, 47, BAR_HEIGHT - 1, bg_color);
 }
 
 static void update_display(void) {
     const char *col_tags[NUM_PERIPHERALS] = {"L", "R", "TP"};
+    bool is_light = (current_theme_id >= 4);
 
     for (int col = 0; col < NUM_PERIPHERALS; col++) {
         int src = -1;
@@ -205,19 +243,26 @@ static void update_display(void) {
 
         if (level > 0) {
             if (level <= 10) {
-                lv_obj_set_style_text_color(label, lv_palette_main(LV_PALETTE_YELLOW), 0);
+                lv_obj_set_style_text_color(label, is_light ? lv_color_hex(0xdc2626) : lv_color_hex(0xef4444), 0);
+            } else if (level <= 25) {
+                lv_obj_set_style_text_color(label, lv_color_hex(0xd97706), 0);
             } else {
-                lv_obj_set_style_text_color(label, lv_color_white(), 0);
+                lv_obj_set_style_text_color(label, is_light ? lv_color_hex(0x0f172a) : lv_color_hex(0xf8fafc), 0);
             }
             lv_label_set_text_fmt(label, "%s %u%%", col_tags[col], (uint8_t)level);
         } else {
-            lv_obj_set_style_text_color(label, lv_palette_main(LV_PALETTE_RED), 0);
+            lv_obj_set_style_text_color(label, is_light ? lv_color_hex(0xdc2626) : lv_color_hex(0xff4444), 0);
             lv_label_set_text_fmt(label, "%s --", col_tags[col]);
         }
 
         lv_obj_clear_flag(symbol, LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(label, LV_OBJ_FLAG_HIDDEN);
     }
+}
+
+void zmk_widget_battery_status_apply_theme(uint8_t theme_id) {
+    current_theme_id = theme_id;
+    update_display();
 }
 
 static void handle_key_press(uint8_t source, uint32_t position) {
@@ -336,7 +381,7 @@ static void poll_battery_work_handler(struct k_work *work) {
 
 int zmk_widget_dongle_battery_status_init(struct zmk_widget_dongle_battery_status *widget, lv_obj_t *parent) {
     widget->obj = lv_obj_create(parent);
-    lv_obj_set_size(widget->obj, 240, 40);
+    lv_obj_set_size(widget->obj, 240, 34);
 
     const int col_centers[NUM_PERIPHERALS] = {-80, 0, 80};
 
@@ -346,8 +391,11 @@ int zmk_widget_dongle_battery_status_init(struct zmk_widget_dongle_battery_statu
 
         lv_canvas_set_buffer(image_canvas, battery_image_buffer[col], BAR_WIDTH, BAR_HEIGHT, LV_IMG_CF_TRUE_COLOR);
 
-        lv_obj_align(image_canvas, LV_ALIGN_BOTTOM_MID, col_centers[col], -6);
-        lv_obj_align(battery_label, LV_ALIGN_TOP_MID, col_centers[col], 2);
+        lv_obj_align(image_canvas, LV_ALIGN_BOTTOM_MID, col_centers[col], -2);
+#if IS_ENABLED(CONFIG_LV_FONT_MONTSERRAT_12)
+        lv_obj_set_style_text_font(battery_label, &lv_font_montserrat_12, 0);
+#endif
+        lv_obj_align(battery_label, LV_ALIGN_TOP_MID, col_centers[col], 0);
 
         battery_objects[col] = (struct battery_column){
             .symbol = image_canvas,

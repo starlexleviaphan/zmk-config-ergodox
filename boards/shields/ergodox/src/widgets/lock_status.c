@@ -22,8 +22,10 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #endif
 
 #include "lock_status.h"
+#include "custom_status_screen.h"
 
 static sys_slist_t widgets = SYS_SLIST_STATIC_INIT(&widgets);
+static uint8_t current_theme_id = 0;
 
 struct lock_status_state {
     bool caps_lock;
@@ -36,18 +38,20 @@ static void set_lock_status_state(struct zmk_widget_lock_status *widget, struct 
     }
 
     bool active = state.caps_lock || state.caps_word;
+    bool is_light = (current_theme_id >= 4);
+    const struct theme_palette *pal = zmk_display_get_theme_palette(current_theme_id);
 
     if (active) {
         lv_color_t accent;
         lv_color_t bg;
 
         if (state.caps_word && !state.caps_lock) {
-            accent = lv_color_hex(0xffb300); /* Neon amber for Caps Word */
-            bg = lv_color_hex(0x261a00);
+            accent = is_light ? lv_color_hex(0xd97706) : lv_color_hex(0xffb300);
+            bg = is_light ? lv_color_hex(0xfef3c7) : lv_color_hex(0x261a00);
             lv_label_set_text(widget->label, "CW");
         } else {
-            accent = lv_color_hex(0x00e5ff); /* Bright cyan for Caps Lock */
-            bg = lv_color_hex(0x002633);
+            accent = is_light ? lv_color_hex(0x0284c7) : lv_color_hex(0x00e5ff);
+            bg = is_light ? lv_color_hex(0xe0f2fe) : lv_color_hex(0x002633);
             lv_label_set_text(widget->label, "CAPS");
         }
 
@@ -58,11 +62,15 @@ static void set_lock_status_state(struct zmk_widget_lock_status *widget, struct 
         lv_obj_set_style_text_color(widget->label, accent, 0);
         lv_obj_clear_flag(widget->obj, LV_OBJ_FLAG_HIDDEN);
     } else {
-        lv_obj_set_style_bg_color(widget->obj, lv_color_hex(0x121218), 0);
+        lv_color_t bg = is_light ? lv_color_hex(0xf1f5f9) : lv_color_hex(0x121218);
+        lv_color_t border = pal ? lv_color_hex(pal->border) : (is_light ? lv_color_hex(0xcfd8dc) : lv_color_hex(0x2d3139));
+        lv_color_t text = is_light ? lv_color_hex(0x64748b) : lv_color_hex(0x4a505b);
+
+        lv_obj_set_style_bg_color(widget->obj, bg, 0);
         lv_obj_set_style_bg_opa(widget->obj, LV_OPA_COVER, 0);
-        lv_obj_set_style_border_color(widget->obj, lv_color_hex(0x2d3139), 0);
+        lv_obj_set_style_border_color(widget->obj, border, 0);
         lv_obj_set_style_border_width(widget->obj, 1, 0);
-        lv_obj_set_style_text_color(widget->label, lv_color_hex(0x4a505b), 0);
+        lv_obj_set_style_text_color(widget->label, text, 0);
         lv_label_set_text(widget->label, "CAPS");
     }
 }
@@ -131,4 +139,12 @@ int zmk_widget_lock_status_init(struct zmk_widget_lock_status *widget, lv_obj_t 
 
 lv_obj_t *zmk_widget_lock_status_obj(struct zmk_widget_lock_status *widget) {
     return widget->obj;
+}
+
+void zmk_widget_lock_status_apply_theme(uint8_t theme_id) {
+    current_theme_id = theme_id;
+    struct zmk_widget_lock_status *widget;
+    SYS_SLIST_FOR_EACH_CONTAINER(&widgets, widget, node) {
+        set_lock_status_state(widget, last_lock_state);
+    }
 }

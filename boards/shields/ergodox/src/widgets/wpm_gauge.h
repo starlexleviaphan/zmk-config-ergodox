@@ -20,3 +20,4 @@ int zmk_widget_wpm_gauge_init(struct zmk_widget_wpm_gauge *widget, lv_obj_t *par
 lv_obj_t *zmk_widget_wpm_gauge_obj(struct zmk_widget_wpm_gauge *widget);
 uint32_t zmk_widget_wpm_gauge_get_color(uint8_t wpm);
 uint8_t zmk_widget_wpm_gauge_smooth(uint8_t current_smooth, uint8_t raw_wpm);
+void zmk_widget_wpm_gauge_apply_theme(uint8_t theme_id);

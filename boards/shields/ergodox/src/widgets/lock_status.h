@@ -16,3 +16,4 @@ struct zmk_widget_lock_status {
 
 int zmk_widget_lock_status_init(struct zmk_widget_lock_status *widget, lv_obj_t *parent);
 lv_obj_t *zmk_widget_lock_status_obj(struct zmk_widget_lock_status *widget);
+void zmk_widget_lock_status_apply_theme(uint8_t theme_id);

@@ -20,6 +20,7 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #include "output_status.h"
 
 static sys_slist_t widgets = SYS_SLIST_STATIC_INIT(&widgets);
+static uint8_t current_theme_id = 0;
 
 struct output_status_state {
     struct zmk_endpoint_instance selected_endpoint;
@@ -28,6 +29,8 @@ struct output_status_state {
     bool active_profile_bonded;
     bool usb_is_hid_ready;
 };
+
+static struct output_status_state last_output_state;
 
 static struct output_status_state get_state(const zmk_event_t *_eh) {
     return (struct output_status_state){
@@ -44,22 +47,32 @@ static void set_status_symbol(struct zmk_widget_output_status *widget, struct ou
         return;
     }
 
+    last_output_state = state;
     char buf[48];
     bool is_usb = (state.selected_endpoint.transport == ZMK_TRANSPORT_USB);
     int profile_num = state.active_profile_index + 1;
+    bool is_light = (current_theme_id >= 4);
 
-    /* Single-line horizontal format:
-     * When USB active: "#00f2fe USB#  #475569 BT%d#"
-     * When BLE active: "#475569 USB#  #00f2fe BT%d#"
-     */
-    if (is_usb) {
-        const char *usb_col = state.usb_is_hid_ready ? "00f2fe" : "ff1744";
-        const char *ble_col = state.active_profile_connected ? "43e97b" : "475569";
-        snprintf(buf, sizeof(buf), "#%s USB#  #%s BT%d#", usb_col, ble_col, profile_num);
+    if (is_light) {
+        if (is_usb) {
+            const char *usb_col = state.usb_is_hid_ready ? "0284c7" : "dc2626";
+            const char *ble_col = state.active_profile_connected ? "16a34a" : "64748b";
+            snprintf(buf, sizeof(buf), "#%s USB#  #%s BT%d#", usb_col, ble_col, profile_num);
+        } else {
+            const char *usb_col = state.usb_is_hid_ready ? "64748b" : "94a3b8";
+            const char *ble_col = state.active_profile_connected ? "0284c7" : "d97706";
+            snprintf(buf, sizeof(buf), "#%s USB#  #%s BT%d#", usb_col, ble_col, profile_num);
+        }
     } else {
-        const char *usb_col = state.usb_is_hid_ready ? "475569" : "333e4f";
-        const char *ble_col = state.active_profile_connected ? "00f2fe" : "ff9100";
-        snprintf(buf, sizeof(buf), "#%s USB#  #%s BT%d#", usb_col, ble_col, profile_num);
+        if (is_usb) {
+            const char *usb_col = state.usb_is_hid_ready ? "00f2fe" : "ff1744";
+            const char *ble_col = state.active_profile_connected ? "43e97b" : "475569";
+            snprintf(buf, sizeof(buf), "#%s USB#  #%s BT%d#", usb_col, ble_col, profile_num);
+        } else {
+            const char *usb_col = state.usb_is_hid_ready ? "475569" : "333e4f";
+            const char *ble_col = state.active_profile_connected ? "00f2fe" : "ff9100";
+            snprintf(buf, sizeof(buf), "#%s USB#  #%s BT%d#", usb_col, ble_col, profile_num);
+        }
     }
 
     lv_label_set_recolor(widget->label, true);
@@ -101,4 +114,12 @@ int zmk_widget_output_status_init(struct zmk_widget_output_status *widget, lv_ob
 
 lv_obj_t *zmk_widget_output_status_obj(struct zmk_widget_output_status *widget) {
     return widget->obj;
+}
+
+void zmk_widget_output_status_apply_theme(uint8_t theme_id) {
+    current_theme_id = theme_id;
+    struct zmk_widget_output_status *widget;
+    SYS_SLIST_FOR_EACH_CONTAINER(&widgets, widget, node) {
+        set_status_symbol(widget, last_output_state);
+    }
 }

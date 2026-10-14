@@ -13,8 +13,10 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #include <zmk/events/layer_state_changed.h>
 
 #include "layer_badge.h"
+#include "custom_status_screen.h"
 
 #define NUM_LAYERS 14
+static uint8_t current_theme_id = 0;
 
 struct layer_info {
     const char *name;
@@ -77,7 +79,20 @@ static void set_layer_badge_state(struct zmk_widget_layer_badge *widget, struct 
     }
 
     const struct layer_info *info = &layer_table[layer];
-    lv_color_t accent = lv_color_hex(info->color_hex);
+    bool is_light = (current_theme_id >= 4);
+    uint32_t hex = info->color_hex;
+
+    /* High contrast color adjustments for crisp rendering on light themes */
+    if (is_light) {
+        if (hex == 0x00d2ff || hex == 0x00f2fe || hex == 0x4facfe) {
+            hex = 0x0284c7; /* Sky / Deep Blue */
+        } else if (hex == 0x38ef7d || hex == 0x43e97b) {
+            hex = 0x16a34a; /* Forest Green */
+        } else if (hex == 0xf9d423 || hex == 0xf6d365) {
+            hex = 0xd97706; /* Amber */
+        }
+    }
+    lv_color_t accent = lv_color_hex(hex);
 
     /* Dynamic accent border on container */
     lv_obj_set_style_border_color(widget->obj, accent, 0);
@@ -92,6 +107,15 @@ void layer_badge_update_cb(struct layer_badge_state state) {
     struct zmk_widget_layer_badge *widget;
     SYS_SLIST_FOR_EACH_CONTAINER(&widgets, widget, node) {
         set_layer_badge_state(widget, state);
+    }
+}
+
+void zmk_widget_layer_badge_apply_theme(uint8_t theme_id) {
+    current_theme_id = theme_id;
+    struct zmk_widget_layer_badge *widget;
+    SYS_SLIST_FOR_EACH_CONTAINER(&widgets, widget, node) {
+        struct layer_badge_state st = { .layer = zmk_keymap_highest_layer_active() };
+        set_layer_badge_state(widget, st);
     }
 }
 

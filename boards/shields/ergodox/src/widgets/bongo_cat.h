@@ -20,3 +20,4 @@ struct zmk_widget_bongo_cat {
 
 int zmk_widget_bongo_cat_init(struct zmk_widget_bongo_cat *widget, lv_obj_t *parent);
 lv_obj_t *zmk_widget_bongo_cat_obj(struct zmk_widget_bongo_cat *widget);
+void zmk_widget_bongo_cat_apply_theme(uint8_t theme_id);

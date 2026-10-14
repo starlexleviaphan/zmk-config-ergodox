@@ -17,8 +17,10 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #endif
 
 #include "bongo_cat.h"
+#include "custom_status_screen.h"
 
 static sys_slist_t bongo_cat_widgets = SYS_SLIST_STATIC_INIT(&bongo_cat_widgets);
+static uint8_t current_theme_id = 0;
 
 /* Key Matrix Split Mapping:
  * Left keys (38 keys): 0..6, 14..20, 28..34, 42..47, 54..58, 64..65, 68..70, 74
@@ -70,12 +72,13 @@ static const char *get_cat_face(uint8_t wpm) {
 }
 
 static lv_color_t get_face_color(uint8_t wpm) {
+    bool is_light = (current_theme_id >= 4);
     if (wpm < 30) {
-        return lv_color_hex(0x00d2ff); /* Cyber Cyan */
+        return is_light ? lv_color_hex(0x0284c7) : lv_color_hex(0x00d2ff); /* Cyber Cyan / Sky Blue */
     } else if (wpm <= 70) {
-        return lv_color_hex(0x76ff03); /* Lime Green */
+        return is_light ? lv_color_hex(0x16a34a) : lv_color_hex(0x76ff03); /* Lime / Green */
     } else {
-        return lv_color_hex(0xff9100); /* Neon Amber / Orange */
+        return is_light ? lv_color_hex(0xd97706) : lv_color_hex(0xff9100); /* Amber / Orange */
     }
 }
 
@@ -83,6 +86,9 @@ static void render_bongo_cat(struct zmk_widget_bongo_cat *widget) {
     if (!widget || !widget->obj || !widget->head_label) {
         return;
     }
+
+    bool is_light = (current_theme_id >= 4);
+    const struct theme_palette *pal = zmk_display_get_theme_palette(current_theme_id);
 
     /* Face and Head */
     lv_label_set_text(widget->head_label, get_cat_face(bongo_wpm));
@@ -93,11 +99,11 @@ static void render_bongo_cat(struct zmk_widget_bongo_cat *widget) {
         if (paw_l_down) {
             lv_label_set_text(widget->paw_l, "o");
             lv_obj_align(widget->paw_l, LV_ALIGN_CENTER, -22, 22);
-            lv_obj_set_style_text_color(widget->paw_l, lv_color_hex(0x38ef7d), 0);
+            lv_obj_set_style_text_color(widget->paw_l, is_light ? lv_color_hex(0x16a34a) : lv_color_hex(0x38ef7d), 0);
         } else {
             lv_label_set_text(widget->paw_l, "/");
             lv_obj_align(widget->paw_l, LV_ALIGN_CENTER, -26, 12);
-            lv_obj_set_style_text_color(widget->paw_l, lv_color_hex(0x9aa0a6), 0);
+            lv_obj_set_style_text_color(widget->paw_l, is_light ? lv_color_hex(0x64748b) : lv_color_hex(0x9aa0a6), 0);
         }
     }
 
@@ -106,23 +112,27 @@ static void render_bongo_cat(struct zmk_widget_bongo_cat *widget) {
         if (paw_r_down) {
             lv_label_set_text(widget->paw_r, "o");
             lv_obj_align(widget->paw_r, LV_ALIGN_CENTER, 22, 22);
-            lv_obj_set_style_text_color(widget->paw_r, lv_color_hex(0x38ef7d), 0);
+            lv_obj_set_style_text_color(widget->paw_r, is_light ? lv_color_hex(0x16a34a) : lv_color_hex(0x38ef7d), 0);
         } else {
             lv_label_set_text(widget->paw_r, "\\");
             lv_obj_align(widget->paw_r, LV_ALIGN_CENTER, 26, 12);
-            lv_obj_set_style_text_color(widget->paw_r, lv_color_hex(0x9aa0a6), 0);
+            lv_obj_set_style_text_color(widget->paw_r, is_light ? lv_color_hex(0x64748b) : lv_color_hex(0x9aa0a6), 0);
         }
     }
 
     /* Desk */
     if (widget->desk) {
-        lv_color_t desk_col = (paw_l_down || paw_r_down) ? lv_color_hex(0x38ef7d) : lv_color_hex(0x2d3139);
+        lv_color_t desk_col = (paw_l_down || paw_r_down)
+            ? (is_light ? lv_color_hex(0x16a34a) : lv_color_hex(0x38ef7d))
+            : (pal ? lv_color_hex(pal->border) : (is_light ? lv_color_hex(0xcfd8dc) : lv_color_hex(0x2d3139)));
         lv_obj_set_style_bg_color(widget->desk, desk_col, 0);
     }
 
     /* Container dynamic border */
     bool active = (paw_l_down || paw_r_down);
-    lv_obj_set_style_border_color(widget->obj, active ? lv_color_hex(0x00d2ff) : lv_color_hex(0x1f293d), 0);
+    lv_color_t active_border = is_light ? lv_color_hex(0x0284c7) : lv_color_hex(0x00d2ff);
+    lv_color_t idle_border = pal ? lv_color_hex(pal->border) : (is_light ? lv_color_hex(0xcfd8dc) : lv_color_hex(0x1f293d));
+    lv_obj_set_style_border_color(widget->obj, active ? active_border : idle_border, 0);
     lv_obj_set_style_border_width(widget->obj, active ? 2 : 1, 0);
 }
 
@@ -250,4 +260,9 @@ int zmk_widget_bongo_cat_init(struct zmk_widget_bongo_cat *widget, lv_obj_t *par
 
 lv_obj_t *zmk_widget_bongo_cat_obj(struct zmk_widget_bongo_cat *widget) {
     return widget->obj;
+}
+
+void zmk_widget_bongo_cat_apply_theme(uint8_t theme_id) {
+    current_theme_id = theme_id;
+    update_all_bongo_cats();
 }

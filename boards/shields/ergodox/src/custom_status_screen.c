@@ -139,6 +139,17 @@ void zmk_display_apply_theme(uint8_t theme_id) {
             lv_obj_set_style_border_color(cards[i], lv_color_hex(pal->border), 0);
         }
     }
+
+#if IS_ENABLED(CONFIG_DONGLE_SCREEN_OUTPUT_ACTIVE)
+    zmk_widget_output_status_apply_theme(theme_id);
+#endif
+    zmk_widget_lock_status_apply_theme(theme_id);
+    zmk_widget_layer_badge_apply_theme(theme_id);
+    zmk_widget_wpm_gauge_apply_theme(theme_id);
+    zmk_widget_bongo_cat_apply_theme(theme_id);
+#if IS_ENABLED(CONFIG_DONGLE_SCREEN_BATTERY_ACTIVE)
+    zmk_widget_battery_status_apply_theme(theme_id);
+#endif
 }
 
 void zmk_display_apply_animation(uint8_t anim_idx) {
@@ -201,7 +212,7 @@ static void apply_card_style(lv_obj_t *card) {
     }
     lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
     uint8_t cur_theme = get_active_theme();
-    if (cur_theme >= 4) cur_theme = 0;
+    if (cur_theme >= 6) cur_theme = 0;
     lv_obj_set_style_bg_color(card, lv_color_hex(themes[cur_theme].bg), 0);
     lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(card, 6, 0);
@@ -277,7 +288,7 @@ lv_obj_t *zmk_display_status_screen(void) {
     lv_obj_set_style_bg_opa(mod_obj, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(mod_obj, 0, 0);
     lv_obj_set_style_pad_all(mod_obj, 0, 0);
-    lv_obj_set_size(mod_obj, 200, 18);
+    lv_obj_set_size(mod_obj, 200, 16);
     lv_obj_set_style_text_font(mod_status_widget.label, &NerdFonts_Regular_20, 0);
     lv_obj_align(mod_obj, LV_ALIGN_TOP_MID, 0, 2);
 #endif
@@ -289,6 +300,7 @@ lv_obj_t *zmk_display_status_screen(void) {
     lv_obj_set_style_bg_opa(batt_obj, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(batt_obj, 0, 0);
     lv_obj_set_style_pad_all(batt_obj, 0, 0);
+    lv_obj_set_size(batt_obj, 240, 34);
     lv_obj_align(batt_obj, LV_ALIGN_BOTTOM_MID, 0, -2);
 #endif
 
