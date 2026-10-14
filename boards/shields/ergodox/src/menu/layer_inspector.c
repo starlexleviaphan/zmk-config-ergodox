@@ -139,6 +139,11 @@ static bool current_is_left_half = true;
 static volatile bool inspector_active = false;
 static bool is_dashboard_mode = false;
 
+/* Render State Cache */
+static int rendered_layer = -1;
+static int rendered_is_left = -1;
+static int rendered_dashboard_mode = -1;
+
 /* LVGL UI Objects */
 static lv_obj_t *inspector_container = NULL;
 static lv_obj_t *header_title_label = NULL;
@@ -302,7 +307,7 @@ static int layer_inspector_build_ui(lv_obj_t *screen) {
 }
 
 static void layer_inspector_work_handler(struct k_work *work);
-static K_WORK_DEFINE(layer_inspector_work, layer_inspector_work_handler);
+static K_WORK_DELAYABLE_DEFINE(layer_inspector_delay_work, layer_inspector_work_handler);
 
 static void layer_inspector_work_handler(struct k_work *work) {
     ARG_UNUSED(work);
@@ -313,6 +318,9 @@ int layer_inspector_init(lv_obj_t *screen) {
     saved_parent_screen = screen;
     inspector_active = false;
     is_dashboard_mode = false;
+    rendered_layer = -1;
+    rendered_is_left = -1;
+    rendered_dashboard_mode = -1;
     return 0;
 }
 
@@ -322,6 +330,17 @@ void layer_inspector_render(void) {
         if (inspector_container) {
             lv_obj_add_flag(inspector_container, LV_OBJ_FLAG_HIDDEN);
         }
+        return;
+    }
+
+    if (current_layer >= NUM_INSPECTED_LAYERS) {
+        current_layer = 0;
+    }
+
+    /* Early exit if render state has not changed (0 ms no-op for rapid events) */
+    if (rendered_layer == current_layer &&
+        rendered_is_left == current_is_left_half &&
+        rendered_dashboard_mode == is_dashboard_mode) {
         return;
     }
 
@@ -514,6 +533,11 @@ void layer_inspector_render(void) {
         lv_obj_set_style_text_color(cell_labels[i], lv_color_hex(style->text), 0);
         lv_label_set_text_static(cell_labels[i], info->label);
     }
+
+    /* Update render cache state upon successful redraw */
+    rendered_layer = current_layer;
+    rendered_is_left = current_is_left_half;
+    rendered_dashboard_mode = is_dashboard_mode;
 }
 
 int layer_inspector_show(uint8_t layer, bool is_left_half) {
@@ -524,7 +548,7 @@ int layer_inspector_show(uint8_t layer, bool is_left_half) {
     current_is_left_half = is_left_half;
     is_dashboard_mode = false;
     inspector_active = true;
-    k_work_submit_to_queue(zmk_display_work_q(), &layer_inspector_work);
+    k_work_reschedule_for_queue(zmk_display_work_q(), &layer_inspector_delay_work, K_NO_WAIT);
     return 0;
 }
 
@@ -536,14 +560,17 @@ int layer_inspector_show_dashboard(uint8_t layer, bool is_left_half) {
     current_is_left_half = is_left_half;
     is_dashboard_mode = true;
     inspector_active = true;
-    k_work_submit_to_queue(zmk_display_work_q(), &layer_inspector_work);
+    k_work_reschedule_for_queue(zmk_display_work_q(), &layer_inspector_delay_work, K_NO_WAIT);
     return 0;
 }
 
 void layer_inspector_hide(void) {
     inspector_active = false;
     is_dashboard_mode = false;
-    k_work_submit_to_queue(zmk_display_work_q(), &layer_inspector_work);
+    rendered_layer = -1;
+    rendered_is_left = -1;
+    rendered_dashboard_mode = -1;
+    k_work_reschedule_for_queue(zmk_display_work_q(), &layer_inspector_delay_work, K_NO_WAIT);
 }
 
 void layer_inspector_handle_nav(enum menu_nav_action action) {
@@ -556,16 +583,19 @@ void layer_inspector_handle_nav(enum menu_nav_action action) {
     case MENU_NAV_SELECT:
         /* Toggle Left / Right half */
         current_is_left_half = !current_is_left_half;
+        k_work_reschedule_for_queue(zmk_display_work_q(), &layer_inspector_delay_work, K_NO_WAIT);
         break;
 
     case MENU_NAV_UP:
         /* Cycle layer up (0..14) */
         current_layer = (current_layer + 1) % NUM_INSPECTED_LAYERS;
+        k_work_reschedule_for_queue(zmk_display_work_q(), &layer_inspector_delay_work, K_NO_WAIT);
         break;
 
     case MENU_NAV_DOWN:
         /* Cycle layer down (14..0) */
         current_layer = (current_layer == 0) ? (NUM_INSPECTED_LAYERS - 1) : (current_layer - 1);
+        k_work_reschedule_for_queue(zmk_display_work_q(), &layer_inspector_delay_work, K_NO_WAIT);
         break;
 
     case MENU_NAV_EXIT:
@@ -599,7 +629,7 @@ void layer_inspector_on_key_position(uint32_t position) {
     if (new_is_left != current_is_left_half) {
         current_is_left_half = new_is_left;
         if (inspector_active) {
-            k_work_submit_to_queue(zmk_display_work_q(), &layer_inspector_work);
+            k_work_reschedule_for_queue(zmk_display_work_q(), &layer_inspector_delay_work, K_MSEC(50));
         }
     }
 }
@@ -611,7 +641,7 @@ void layer_inspector_on_layer_change(uint8_t layer) {
     if (layer != current_layer) {
         current_layer = layer;
         if (inspector_active) {
-            k_work_submit_to_queue(zmk_display_work_q(), &layer_inspector_work);
+            k_work_reschedule_for_queue(zmk_display_work_q(), &layer_inspector_delay_work, K_MSEC(50));
         }
     }
 }
