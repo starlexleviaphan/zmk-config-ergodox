@@ -17,6 +17,9 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #include "layer_inspector.h"
 #include "layer_inspector_data.h"
 
+#if IS_ENABLED(CONFIG_LV_FONT_MONTSERRAT_14)
+LV_FONT_DECLARE(lv_font_montserrat_14);
+#endif
 #if IS_ENABLED(CONFIG_LV_FONT_MONTSERRAT_12)
 LV_FONT_DECLARE(lv_font_montserrat_12);
 #endif
@@ -27,6 +30,8 @@ LV_FONT_DECLARE(lv_font_montserrat_12);
 
 #define NUM_INSPECTED_LAYERS 15
 #define KEYS_PER_HALF 38
+#define ZOOM_KEY_WIDTH 44
+#define ZOOM_KEY_HEIGHT 38
 
 static inline bool is_right_key(uint32_t pos) {
     if (pos >= 76) return false;
@@ -158,6 +163,52 @@ lv_obj_t *layer_inspector_get_container(void) {
 
 bool layer_inspector_is_active(void) {
     return inspector_active;
+}
+
+uint8_t layer_inspector_get_active_key_count(uint8_t layer, bool is_left_half) {
+    if (layer >= NUM_INSPECTED_LAYERS) {
+        return 0;
+    }
+    uint8_t active = 0;
+    uint8_t offset = is_left_half ? 0 : KEYS_PER_HALF;
+    for (uint8_t i = 0; i < KEYS_PER_HALF; i++) {
+        if (layer_keys_data[layer][offset + i].cat != KEY_CAT_TRANS) {
+            active++;
+        }
+    }
+    return active;
+}
+
+bool is_partial_layer(uint8_t layer, bool is_left_half) {
+    if (layer >= NUM_INSPECTED_LAYERS) {
+        return false;
+    }
+
+    /* Full layout layers always render full 38-key zero-gap layout */
+    if (layer == 0 /* WORK */ || layer == 1 /* SWAP */ || layer == 3 /* TYPE */ ||
+        layer == 4 /* SYM1 */ || layer == 9 /* GSWP */ || layer == 13 /* SYM2 */ ||
+        layer == 14 /* MENU */) {
+        return false;
+    }
+
+    uint8_t active = layer_inspector_get_active_key_count(layer, is_left_half);
+    if (active == 0) {
+        return false;
+    }
+
+    /* Inspected half has <= 16 active keys */
+    if (active <= 16) {
+        return true;
+    }
+
+    /* Designated partial functional layers */
+    if (layer == 2 /* LNPD */ || layer == 5 /* NRPD */ || layer == 6 /* MOUS */ ||
+        layer == 7 /* ARRW */ || layer == 8 /* GAME */ || layer == 10 /* NPAD */ ||
+        layer == 11 /* FUN1 */ || layer == 12 /* FUN2 */) {
+        return true;
+    }
+
+    return false;
 }
 
 static lv_obj_t *saved_parent_screen = NULL;
@@ -332,12 +383,18 @@ void layer_inspector_render(void) {
         current_layer = 0;
     }
 
+    bool is_zoom = is_partial_layer(current_layer, current_is_left_half);
+
     /* Update Header Layer Name & Accent Color */
     const char *layer_name = (current_layer == 14) ? "MENU" : zmk_widget_layer_badge_get_name(current_layer);
     uint32_t layer_color = (current_layer == 14) ? 0x707e94 : zmk_widget_layer_badge_get_color(current_layer);
     if (header_title_label) {
         lv_obj_set_style_text_color(header_title_label, lv_color_hex(layer_color), 0);
-        lv_label_set_text_fmt(header_title_label, "#%u %s", current_layer, layer_name);
+        if (is_zoom) {
+            lv_label_set_text_fmt(header_title_label, "[ZOOM] #%u %s", current_layer, layer_name);
+        } else {
+            lv_label_set_text_fmt(header_title_label, "#%u %s", current_layer, layer_name);
+        }
     }
 
     /* Update Active Half Indicator Banner */
@@ -351,26 +408,103 @@ void layer_inspector_render(void) {
         }
     }
 
+    const struct key_geometry *base_geom = current_is_left_half ? left_half_geom : right_half_geom;
+    uint8_t key_offset = current_is_left_half ? 0 : KEYS_PER_HALF;
+
+    int min_x = 280, max_x = 0;
+    int min_y = 240, max_y = 0;
+    int target_w = ZOOM_KEY_WIDTH;
+    int target_h = ZOOM_KEY_HEIGHT;
+    int origin_x = 0, origin_y = 0;
+
+    if (is_zoom) {
+        for (uint8_t i = 0; i < KEYS_PER_HALF; i++) {
+            if (layer_keys_data[current_layer][key_offset + i].cat != KEY_CAT_TRANS) {
+                const struct key_geometry *bg = &base_geom[i];
+                if (bg->x < min_x) min_x = bg->x;
+                if (bg->x + bg->w > max_x) max_x = bg->x + bg->w;
+                if (bg->y < min_y) min_y = bg->y;
+                if (bg->y + bg->h > max_y) max_y = bg->y + bg->h;
+            }
+        }
+
+        int cluster_w = max_x - min_x;
+        int cluster_h = max_y - min_y;
+
+        if (cluster_w > 0 && (cluster_w * target_w) / 29 > 268) {
+            target_w = (268 * 29) / cluster_w;
+        }
+        if (target_w < 29) target_w = 29;
+
+        if (cluster_h > 0 && (cluster_h * target_h) / 26 > 184) {
+            target_h = (184 * 26) / cluster_h;
+        }
+        if (target_h < 26) target_h = 26;
+
+        int scaled_cluster_w = (cluster_w * target_w) / 29;
+        int scaled_cluster_h = (cluster_h * target_h) / 26;
+
+        origin_x = (280 - scaled_cluster_w) / 2;
+        origin_y = 28 + (184 - scaled_cluster_h) / 2;
+    }
+
     /* Update 38 Key Cells for the Inspected Half */
     for (uint8_t i = 0; i < KEYS_PER_HALF; i++) {
         if (!cell_labels[i]) {
             continue;
         }
 
-        const struct key_geometry *geom = current_is_left_half ? &left_half_geom[i] : &right_half_geom[i];
-        lv_obj_set_pos(cell_labels[i], geom->x, geom->y);
-        lv_obj_set_size(cell_labels[i], geom->w, geom->h);
-
-        /* Center vertically depending on key height */
-        uint8_t pad_t = (geom->h > 12) ? ((geom->h - 12) / 2) : 0;
-        lv_obj_set_style_pad_top(cell_labels[i], pad_t, 0);
-
-        uint8_t key_idx = current_is_left_half ? i : (i + KEYS_PER_HALF);
+        uint8_t key_idx = key_offset + i;
         const struct key_cell_info *info = &layer_keys_data[current_layer][key_idx];
 
         uint8_t cat = info->cat;
         if (cat >= KEY_CAT_COUNT) {
             cat = KEY_CAT_ALPHA;
+        }
+
+        if (is_zoom) {
+            if (cat == KEY_CAT_TRANS) {
+                /* Dim/hide transparent cells in zoom mode */
+                lv_obj_add_flag(cell_labels[i], LV_OBJ_FLAG_HIDDEN);
+                continue;
+            }
+            lv_obj_clear_flag(cell_labels[i], LV_OBJ_FLAG_HIDDEN);
+
+            const struct key_geometry *bg = &base_geom[i];
+            int rel_x = bg->x - min_x;
+            int rel_y = bg->y - min_y;
+            int kx = origin_x + (rel_x * target_w) / 29;
+            int ky = origin_y + (rel_y * target_h) / 26;
+            int kw = (bg->w * target_w) / 29;
+            int kh = (bg->h * target_h) / 26;
+
+            lv_obj_set_pos(cell_labels[i], kx, ky);
+            lv_obj_set_size(cell_labels[i], kw, kh);
+
+            /* Vertical padding for vertically centered label text */
+            uint8_t pad_t = (kh > 14) ? ((kh - 14) / 2) : 0;
+            lv_obj_set_style_pad_top(cell_labels[i], pad_t, 0);
+
+#if IS_ENABLED(CONFIG_LV_FONT_MONTSERRAT_14)
+            lv_obj_set_style_text_font(cell_labels[i], &lv_font_montserrat_14, 0);
+#elif IS_ENABLED(CONFIG_LV_FONT_MONTSERRAT_12)
+            lv_obj_set_style_text_font(cell_labels[i], &lv_font_montserrat_12, 0);
+#endif
+        } else {
+            /* Full layout standard 38-key zero-gap rendering */
+            lv_obj_clear_flag(cell_labels[i], LV_OBJ_FLAG_HIDDEN);
+
+            const struct key_geometry *geom = &base_geom[i];
+            lv_obj_set_pos(cell_labels[i], geom->x, geom->y);
+            lv_obj_set_size(cell_labels[i], geom->w, geom->h);
+
+            /* Center vertically depending on key height */
+            uint8_t pad_t = (geom->h > 12) ? ((geom->h - 12) / 2) : 0;
+            lv_obj_set_style_pad_top(cell_labels[i], pad_t, 0);
+
+#if IS_ENABLED(CONFIG_LV_FONT_MONTSERRAT_12)
+            lv_obj_set_style_text_font(cell_labels[i], &lv_font_montserrat_12, 0);
+#endif
         }
 
         const struct category_style *style = &cat_styles[cat];
@@ -425,12 +559,12 @@ void layer_inspector_handle_nav(enum menu_nav_action action) {
         break;
 
     case MENU_NAV_UP:
-        /* Cycle layer up (0..13) */
+        /* Cycle layer up (0..14) */
         current_layer = (current_layer + 1) % NUM_INSPECTED_LAYERS;
         break;
 
     case MENU_NAV_DOWN:
-        /* Cycle layer down (13..0) */
+        /* Cycle layer down (14..0) */
         current_layer = (current_layer == 0) ? (NUM_INSPECTED_LAYERS - 1) : (current_layer - 1);
         break;
 

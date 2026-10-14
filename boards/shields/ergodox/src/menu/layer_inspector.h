@@ -27,6 +27,8 @@ void layer_inspector_hide(void);
 void layer_inspector_handle_nav(enum menu_nav_action action);
 bool layer_inspector_is_active(void);
 void layer_inspector_render(void);
+bool is_partial_layer(uint8_t layer, bool is_left_half);
+uint8_t layer_inspector_get_active_key_count(uint8_t layer, bool is_left_half);
 
 void layer_inspector_on_key_position(uint32_t position);
 void layer_inspector_on_layer_change(uint8_t layer);
