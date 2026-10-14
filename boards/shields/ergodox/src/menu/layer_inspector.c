@@ -321,7 +321,7 @@ static int layer_inspector_build_ui(lv_obj_t *screen) {
     sep_bot_obj = lv_obj_create(inspector_container);
     if (sep_bot_obj) {
         lv_obj_set_size(sep_bot_obj, 268, 1);
-        lv_obj_set_pos(sep_bot_obj, 6, 214);
+        lv_obj_set_pos(sep_bot_obj, 6, 202);
         lv_obj_set_style_bg_color(sep_bot_obj, lv_color_hex(0x1f293d), 0);
         lv_obj_set_style_bg_opa(sep_bot_obj, LV_OPA_COVER, 0);
         lv_obj_set_style_border_width(sep_bot_obj, 0, 0);
@@ -332,7 +332,7 @@ static int layer_inspector_build_ui(lv_obj_t *screen) {
     if (footer_label) {
         lv_label_set_text(footer_label, "W/S:Layer  A/D:Half  ESC:Back");
         lv_obj_set_style_text_color(footer_label, lv_color_hex(0x707e94), 0);
-        lv_obj_align(footer_label, LV_ALIGN_BOTTOM_MID, 0, -7);
+        lv_obj_align(footer_label, LV_ALIGN_BOTTOM_MID, 0, -5);
     }
 
     return 0;
