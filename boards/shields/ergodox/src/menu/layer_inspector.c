@@ -254,7 +254,7 @@ static int layer_inspector_build_ui(lv_obj_t *screen) {
     /* Active Half Banner Label (Top-Right) */
     header_half_label = lv_label_create(inspector_container);
     if (header_half_label) {
-        lv_label_set_text(header_half_label, "< LEFT HALF >");
+        lv_label_set_text(header_half_label, "< LEFT >");
         lv_obj_set_style_text_color(header_half_label, lv_color_hex(0x00f2fe), 0);
         lv_obj_align(header_half_label, LV_ALIGN_TOP_RIGHT, -10, 6);
     }
@@ -299,7 +299,7 @@ static int layer_inspector_build_ui(lv_obj_t *screen) {
     /* Navigation Footer Label */
     footer_label = lv_label_create(inspector_container);
     if (footer_label) {
-        lv_label_set_text(footer_label, "W/S:Layer  A/D:Half  ESC:Menu");
+        lv_label_set_text(footer_label, "W/S:Layer  A/D:Half  ESC:Back");
         lv_obj_set_style_text_color(footer_label, lv_color_hex(0x707e94), 0);
         lv_obj_align(footer_label, LV_ALIGN_BOTTOM_MID, 0, -7);
     }
@@ -420,10 +420,10 @@ void layer_inspector_render(void) {
     /* Update Active Half Indicator Banner */
     if (header_half_label) {
         if (current_is_left_half) {
-            lv_label_set_text(header_half_label, "< LEFT HALF >");
+            lv_label_set_text(header_half_label, "< LEFT >");
             lv_obj_set_style_text_color(header_half_label, lv_color_hex(0x00f2fe), 0);
         } else {
-            lv_label_set_text(header_half_label, "< RIGHT HALF >");
+            lv_label_set_text(header_half_label, "< RIGHT >");
             lv_obj_set_style_text_color(header_half_label, lv_color_hex(0xff9a44), 0);
         }
     }
