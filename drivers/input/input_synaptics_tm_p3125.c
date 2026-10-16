@@ -5,6 +5,7 @@
 
 #define DT_DRV_COMPAT synaptics_tm_p3125
 
+#ifndef ZMK_TOUCHPAD_UNIT_TEST
 #include <zephyr/device.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/i2c.h>
@@ -14,9 +15,17 @@
 #include <zephyr/logging/log.h>
 
 LOG_MODULE_REGISTER(synaptics_tm_p3125, LOG_LEVEL_INF);
+#endif
 
 #define SYNAPTICS_REPORT_TOUCH 0x03
 #define SYNAPTICS_REPORT_MOUSE 0x02
+
+/* I2C & BLE pipeline constants */
+#define SYNAPTICS_PTP_REPORT_LEN 32
+#define SYNAPTICS_MAX_PACKETS_PER_PASS 6
+#define SYNAPTICS_BLE_FRAME_MS 8
+#define SYNAPTICS_GAP_RESET_MS 45
+#define SYNAPTICS_LIFTOFF_TIMEOUT_MS 85
 
 /* Precision tap & drag timings (libinput & Windows PTP standard) */
 #define TAP_MAX_DURATION_MS 320
@@ -28,9 +37,15 @@ LOG_MODULE_REGISTER(synaptics_tm_p3125, LOG_LEVEL_INF);
 #define SCROLL_STEP 28
 #define THREE_FINGER_SWIPE_THRESHOLD 120
 
-/* Palm rejection: edge exclusion margin (Sensor X range: 0..1219) */
+/* Palm rejection: edge exclusion margin and interior recovery (Sensor X range: 0..1219) */
 #define PALM_EDGE_LEFT 70
 #define PALM_EDGE_RIGHT 1150
+#define PALM_INTERIOR_LEFT 100
+#define PALM_INTERIOR_RIGHT 1120
+
+static inline bool synaptics_slot_valid(uint8_t status) {
+  return (status & 0x03) == 0x03;
+}
 
 struct synaptics_config {
   struct i2c_dt_spec i2c;
@@ -95,7 +110,55 @@ struct synaptics_data {
 
   /* Physical clickpad button */
   bool prev_btn_left;
+
+  /* 8 ms BLE report coalescer & palm suppression state */
+  int16_t pend_dx;
+  int16_t pend_dy;
+  int16_t pend_wheel;
+  int16_t pend_hwheel;
+  int64_t last_ble_report_time;
+  bool has_ble_report;
+  bool palm_suppressed;
 };
+
+static void synaptics_flush_reports(struct synaptics_data *data, int64_t now,
+                                    bool force) {
+  if (data->pend_dx == 0 && data->pend_dy == 0 && data->pend_wheel == 0 &&
+      data->pend_hwheel == 0) {
+    return;
+  }
+
+  if (force || !data->has_ble_report ||
+      (now - data->last_ble_report_time) >= SYNAPTICS_BLE_FRAME_MS) {
+    const struct device *dev = data->dev;
+
+    if (data->pend_dx != 0) {
+      bool sync_x = (data->pend_dy == 0 && data->pend_wheel == 0 &&
+                     data->pend_hwheel == 0);
+      input_report_rel(dev, INPUT_REL_X, data->pend_dx, sync_x, K_NO_WAIT);
+      data->pend_dx = 0;
+    }
+    if (data->pend_dy != 0) {
+      bool sync_y = (data->pend_wheel == 0 && data->pend_hwheel == 0);
+      input_report_rel(dev, INPUT_REL_Y, data->pend_dy, sync_y, K_NO_WAIT);
+      data->pend_dy = 0;
+    }
+    if (data->pend_wheel != 0) {
+      bool sync_w = (data->pend_hwheel == 0);
+      input_report_rel(dev, INPUT_REL_WHEEL, data->pend_wheel, sync_w,
+                       K_NO_WAIT);
+      data->pend_wheel = 0;
+    }
+    if (data->pend_hwheel != 0) {
+      input_report_rel(dev, INPUT_REL_HWHEEL, data->pend_hwheel, true,
+                       K_NO_WAIT);
+      data->pend_hwheel = 0;
+    }
+
+    data->last_ble_report_time = now;
+    data->has_ble_report = true;
+  }
+}
 
 static void synaptics_tap_release_handler(struct k_work *work) {
   struct k_work_delayable *dwork = k_work_delayable_from_work(work);
@@ -135,11 +198,14 @@ static void synaptics_swipe_down_release_handler(struct k_work *work) {
 }
 
 static void synaptics_inertial_scroll_handler(struct k_work *work) {
+  (void)work;
   /* No-op: OS native smooth scrolling handles deceleration without reverse bounce */
 }
 
 static void synaptics_process_liftoff(struct synaptics_data *data) {
   const struct device *dev = data->dev;
+
+  synaptics_flush_reports(data, k_uptime_get(), true);
 
   if (data->gesture_max_fingers >= 3) {
     if (data->prev_three_finger) {
@@ -187,7 +253,7 @@ static void synaptics_process_liftoff(struct synaptics_data *data) {
         data->is_tap_dragging = false;
         input_report_key(dev, INPUT_BTN_LEFT, 0, true, K_NO_WAIT);
         data->last_tap_release_time = 0;
-      } else if (duration < TAP_MAX_DURATION_MS &&
+      } else if (!data->palm_suppressed && duration < TAP_MAX_DURATION_MS &&
                  data->touch_max_disp < TAP_MAX_DISPLACEMENT) {
         /* Single Tap: Click */
         input_report_key(dev, INPUT_BTN_LEFT, 1, true, K_NO_WAIT);
@@ -204,6 +270,7 @@ static void synaptics_process_liftoff(struct synaptics_data *data) {
   data->prev_touching = false;
   data->prev_two_finger = false;
   data->prev_three_finger = false;
+  data->palm_suppressed = false;
 }
 
 static void synaptics_work_handler(struct k_work *work) {
@@ -212,20 +279,17 @@ static void synaptics_work_handler(struct k_work *work) {
   const struct device *dev = data->dev;
   const struct synaptics_config *config = dev->config;
 
-  int16_t acc_dx = 0;
-  int16_t acc_dy = 0;
-  bool has_rel = false;
   int packets_read = 0;
 
-  /* Read all pending packets while INT is asserted (active-low GPIO returns > 0) */
-  for (int iter = 0; iter < 16; iter++) {
+  /* Read bounded batch of pending packets while INT is asserted (active-low GPIO returns > 0) */
+  for (int iter = 0; iter < SYNAPTICS_MAX_PACKETS_PER_PASS; iter++) {
     int pin_active = gpio_pin_get_dt(&config->irq_gpio);
     if (pin_active <= 0) {
       break;
     }
 
-    /* Read full report (up to 64 bytes) to guarantee hardware FIFO is completely drained */
-    uint8_t buf[64];
+    /* Read exact 32-byte PTP report to minimize I2C bus transaction time */
+    uint8_t buf[SYNAPTICS_PTP_REPORT_LEN];
     int ret = i2c_read(config->i2c.bus, buf, sizeof(buf), data->active_addr);
     if (ret < 0) {
       break;
@@ -239,21 +303,22 @@ static void synaptics_work_handler(struct k_work *work) {
     if (report_id == SYNAPTICS_REPORT_TOUCH) {
       /* Slot 0 (Finger 1) */
       uint8_t status0 = buf[3];
-      bool tip0 = (status0 & 0x02) != 0;
+      bool tip0 = synaptics_slot_valid(status0);
       uint16_t x0 = (uint16_t)(buf[4] | (buf[5] << 8));
       uint16_t y0 = (uint16_t)(buf[6] | (buf[7] << 8));
 
       /* Slot 1 (Finger 2) */
       uint8_t status1 = buf[8];
-      bool tip1 = (status1 & 0x02) != 0;
+      bool tip1 = synaptics_slot_valid(status1);
       uint16_t x1 = (uint16_t)(buf[9] | (buf[10] << 8));
       uint16_t y1 = (uint16_t)(buf[11] | (buf[12] << 8));
 
       /* Slot 2 (Finger 3) & contact count */
       uint8_t status2 = buf[13];
-      bool tip2 = (status2 & 0x02) != 0;
+      bool tip2 = synaptics_slot_valid(status2);
       uint16_t y2 = (uint16_t)(buf[16] | (buf[17] << 8));
       uint8_t contact_count = buf[30];
+      (void)contact_count;
 
       /* Physical clickpad button */
       bool physical_btn = (buf[31] & 0x01) != 0;
@@ -262,7 +327,7 @@ static void synaptics_work_handler(struct k_work *work) {
         input_report_key(dev, INPUT_BTN_LEFT, physical_btn ? 1 : 0, true, K_NO_WAIT);
       }
 
-      /* Determine active contact count purely from hardware tip switches */
+      /* Determine active contact count from validated hardware tip+confidence slots */
       uint8_t contacts = 0;
       if (tip0) contacts++;
       if (tip1) contacts++;
@@ -349,7 +414,7 @@ static void synaptics_work_handler(struct k_work *work) {
                 data->scroll_accum_y += dy;
                 int16_t ticks_y = data->scroll_accum_y / SCROLL_STEP;
                 if (ticks_y != 0) {
-                  input_report_rel(dev, INPUT_REL_WHEEL, ticks_y, true, K_NO_WAIT);
+                  data->pend_wheel += ticks_y;
                   data->scroll_accum_y -= (ticks_y * SCROLL_STEP);
                   data->two_finger_scrolled = true;
                 }
@@ -358,7 +423,7 @@ static void synaptics_work_handler(struct k_work *work) {
                 data->scroll_accum_x += dx;
                 int16_t ticks_x = data->scroll_accum_x / SCROLL_STEP;
                 if (ticks_x != 0) {
-                  input_report_rel(dev, INPUT_REL_HWHEEL, ticks_x, true, K_NO_WAIT);
+                  data->pend_hwheel += ticks_x;
                   data->scroll_accum_x -= (ticks_x * SCROLL_STEP);
                   data->two_finger_scrolled = true;
                 }
@@ -390,6 +455,7 @@ static void synaptics_work_handler(struct k_work *work) {
           data->touch_start_y = y0;
           data->touch_max_disp = 0;
           data->inertial_dy = 0;
+          data->palm_suppressed = (x0 < PALM_EDGE_LEFT || x0 > PALM_EDGE_RIGHT);
 
           int16_t d_tap_x = (int16_t)x0 - (int16_t)data->last_tap_x;
           int16_t d_tap_y = (int16_t)y0 - (int16_t)data->last_tap_y;
@@ -397,7 +463,8 @@ static void synaptics_work_handler(struct k_work *work) {
           if (d_tap_y < 0) d_tap_y = -d_tap_y;
 
           /* Check Tap-and-Drag double tap condition */
-          if ((now - data->last_tap_release_time) < TAP_DRAG_TIMEOUT_MS &&
+          if (!data->palm_suppressed &&
+              (now - data->last_tap_release_time) < TAP_DRAG_TIMEOUT_MS &&
               d_tap_x < TAP_DRAG_MAX_DISTANCE && d_tap_y < TAP_DRAG_MAX_DISTANCE) {
             data->is_tap_dragging = true;
             k_work_cancel_delayable(&data->tap_release_work);
@@ -413,6 +480,19 @@ static void synaptics_work_handler(struct k_work *work) {
           data->prev_y0 = y0;
           data->prev_x0_time = now;
           data->prev_touching = true;
+        } else if (data->palm_suppressed) {
+          if (x0 >= PALM_INTERIOR_LEFT && x0 <= PALM_INTERIOR_RIGHT) {
+            data->palm_suppressed = false;
+            data->prev_x0 = x0;
+            data->prev_y0 = y0;
+            data->prev_x0_time = now;
+            data->touch_start_x = x0;
+            data->touch_start_y = y0;
+          }
+        } else if ((now - data->prev_x0_time) > SYNAPTICS_GAP_RESET_MS) {
+          data->prev_x0 = x0;
+          data->prev_y0 = y0;
+          data->prev_x0_time = now;
         } else {
           /* Continuous dragging/moving: strictly compute delta from previous position */
           int16_t dx = (int16_t)x0 - (int16_t)data->prev_x0;
@@ -422,7 +502,7 @@ static void synaptics_work_handler(struct k_work *work) {
           data->prev_y0 = y0;
           data->prev_x0_time = now;
 
-          /* Filter out abnormal positional teleportation / glitch jumps (> 250 units in ~4-8 ms) */
+          /* Filter out abnormal positional teleportation / glitch jumps (>= 250 units) */
           if (dx > -250 && dx < 250 && dy > -250 && dy < 250) {
             /* Displacement from touch down point */
             int16_t cur_disp_x = (int16_t)x0 - (int16_t)data->touch_start_x;
@@ -436,9 +516,8 @@ static void synaptics_work_handler(struct k_work *work) {
               data->touch_max_disp = (uint16_t)cur_disp_y;
             }
 
-            acc_dx += dx;
-            acc_dy += dy;
-            has_rel = true;
+            data->pend_dx += dx;
+            data->pend_dy += dy;
           }
         }
       }
@@ -451,9 +530,12 @@ static void synaptics_work_handler(struct k_work *work) {
     }
   } /* End FIFO loop */
 
-  /* Inactivity check: if sensor produced no packets for >= 250 ms, process liftoff */
+  /* Flush coalesced BLE movement/scroll reports when 8 ms frame window expires */
+  synaptics_flush_reports(data, k_uptime_get(), false);
+
+  /* Inactivity check: if sensor produced no packets for >= SYNAPTICS_LIFTOFF_TIMEOUT_MS, process liftoff */
   if (packets_read == 0) {
-    if ((k_uptime_get() - data->last_packet_time) >= 250) {
+    if ((k_uptime_get() - data->last_packet_time) >= SYNAPTICS_LIFTOFF_TIMEOUT_MS) {
       if (data->prev_touching || data->prev_two_finger || data->prev_three_finger ||
           data->gesture_max_fingers > 0 || data->is_tap_dragging) {
         synaptics_process_liftoff(data);
@@ -461,25 +543,19 @@ static void synaptics_work_handler(struct k_work *work) {
     }
   }
 
-  /* Emit aggregated movement across drained packets */
-  if (has_rel && (acc_dx != 0 || acc_dy != 0)) {
-    input_report_rel(dev, INPUT_REL_X, acc_dx, false, K_NO_WAIT);
-    input_report_rel(dev, INPUT_REL_Y, acc_dy, true, K_NO_WAIT);
-  }
-
-  /* Polling management:
-   * 1. If INT pin is still asserted (active-low GPIO returns > 0), re-schedule immediately
-   *    so no edge interrupt is missed and hardware FIFO is fully drained!
-   * 2. If fingers are active or dragging, continue fast poll (4 ms) during motion.
-   * 3. Otherwise stop polling completely and allow CPU to sleep until next INT pin edge.
+  /* Scheduling:
+   * 1. If INT pin is still asserted, reschedule in 1 ms to continue draining FIFO.
+   * 2. If un-flushed deltas remain pending, schedule flush at SYNAPTICS_BLE_FRAME_MS.
+   * 3. If fingers are still active, schedule liftoff check at 35 ms.
    */
   if (gpio_pin_get_dt(&config->irq_gpio) > 0) {
-    k_work_schedule(&data->work, K_MSEC(2));
-  } else if (data->prev_touching || data->prev_two_finger || data->prev_three_finger ||
-             data->is_tap_dragging || data->gesture_max_fingers > 0) {
-    if ((k_uptime_get() - data->last_packet_time) < 250) {
-      k_work_schedule(&data->work, K_MSEC(4));
-    }
+    k_work_reschedule(&data->work, K_MSEC(1));
+  } else if (data->pend_dx != 0 || data->pend_dy != 0 ||
+             data->pend_wheel != 0 || data->pend_hwheel != 0) {
+    k_work_reschedule(&data->work, K_MSEC(SYNAPTICS_BLE_FRAME_MS));
+  } else if (data->prev_touching || data->prev_two_finger ||
+             data->prev_three_finger || data->gesture_max_fingers > 0) {
+    k_work_reschedule(&data->work, K_MSEC(35));
   }
 }
 
@@ -489,9 +565,11 @@ static void synaptics_heartbeat_handler(struct k_work *work);
 static void synaptics_gpio_callback(const struct device *port,
                                     struct gpio_callback *cb,
                                     gpio_port_pins_t pins) {
+  (void)port;
+  (void)pins;
   struct synaptics_data *data =
       CONTAINER_OF(cb, struct synaptics_data, gpio_cb);
-  k_work_schedule(&data->work, K_NO_WAIT);
+  k_work_reschedule(&data->work, K_NO_WAIT);
 }
 
 static void synaptics_heartbeat_handler(struct k_work *work) {
@@ -503,7 +581,7 @@ static void synaptics_heartbeat_handler(struct k_work *work) {
 
   /* Fail-safe watchdog: if INT pin is asserted while work is idle, wake it up immediately */
   if (gpio_pin_get_dt(&config->irq_gpio) > 0) {
-    k_work_schedule(&data->work, K_NO_WAIT);
+    k_work_reschedule(&data->work, K_NO_WAIT);
   }
   k_work_schedule(&data->heartbeat_work, K_MSEC(100));
 }
@@ -567,7 +645,7 @@ static void synaptics_delayed_init_handler(struct k_work *work) {
   gpio_add_callback(config->irq_gpio.port, &data->gpio_cb);
 
   /* Schedule work immediately to drain any pending state */
-  k_work_schedule(&data->work, K_NO_WAIT);
+  k_work_reschedule(&data->work, K_NO_WAIT);
 
   /* Start fail-safe heartbeat watchdog every 100 ms */
   k_work_schedule(&data->heartbeat_work, K_MSEC(100));
@@ -603,6 +681,7 @@ static int synaptics_init(const struct device *dev) {
   return 0;
 }
 
+#ifndef ZMK_TOUCHPAD_UNIT_TEST
 #define SYNAPTICS_INIT(inst)                                                   \
   static struct synaptics_data synaptics_data_##inst;                          \
   static const struct synaptics_config synaptics_config_##inst = {             \
@@ -614,3 +693,4 @@ static int synaptics_init(const struct device *dev) {
                         CONFIG_INPUT_INIT_PRIORITY, NULL);
 
 DT_INST_FOREACH_STATUS_OKAY(SYNAPTICS_INIT)
+#endif
