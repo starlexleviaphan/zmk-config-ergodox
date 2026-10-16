@@ -28,10 +28,17 @@ LOG_MODULE_REGISTER(synaptics_tm_p3125, LOG_LEVEL_INF);
 #define SYNAPTICS_LIFTOFF_TIMEOUT_MS 85
 
 /* Precision tap & drag timings (libinput & Windows PTP standard) */
-#define TAP_MAX_DURATION_MS 320
-#define TAP_MAX_DISPLACEMENT 110
-#define TAP_DRAG_TIMEOUT_MS 450
-#define TAP_DRAG_MAX_DISTANCE 150
+#define TAP_MAX_DURATION_MS 280
+#define TAP_MAX_DISPLACEMENT 90
+#define TAP_DRAG_TIMEOUT_MS 400
+#define TAP_DRAG_MAX_DISTANCE 140
+#define DRAG_LOCK_CONT_MS 180
+
+/* 1F->2F landing grace window & physical clickpad zones */
+#define SYNAPTICS_2F_GRACE_MS 20
+#define SYNAPTICS_2F_GRACE_MAX_DISP 35
+#define CLICKPAD_RIGHT_X_MIN 650
+#define CLICKPAD_RIGHT_Y_MIN 650
 
 /* Scroll & gesture thresholds */
 #define SCROLL_STEP 28
@@ -83,6 +90,13 @@ struct synaptics_data {
   uint16_t touch_max_disp;
   int64_t touch_start_time;
   int64_t last_packet_time;
+  int16_t prev_raw_dx;
+  int16_t prev_raw_dy;
+  int16_t subpixel_rem_x;
+  int16_t subpixel_rem_y;
+  int16_t grace_dx;
+  int16_t grace_dy;
+  bool in_grace_window;
 
   /* Tap and Drag state machine */
   uint16_t last_tap_x;
@@ -108,8 +122,10 @@ struct synaptics_data {
   uint16_t three_finger_start_y;
   bool three_finger_swiped;
 
-  /* Physical clickpad button */
+  /* Physical clickpad button & zone state */
   bool prev_btn_left;
+  uint16_t active_phys_btn;
+  bool phys_btn_used_in_touch;
 
   /* 8 ms BLE report coalescer & palm suppression state */
   int16_t pend_dx;
@@ -160,13 +176,92 @@ static void synaptics_flush_reports(struct synaptics_data *data, int64_t now,
   }
 }
 
+static void synaptics_apply_ballistics(struct synaptics_data *data,
+                                       int16_t raw_dx, int16_t raw_dy,
+                                       int16_t *out_dx, int16_t *out_dy) {
+  int16_t abs_dx = raw_dx >= 0 ? raw_dx : -raw_dx;
+  int16_t abs_dy = raw_dy >= 0 ? raw_dy : -raw_dy;
+  int16_t v = abs_dx + abs_dy;
+
+  int16_t smooth_dx;
+  int16_t smooth_dy;
+  if (v <= 6) {
+    smooth_dx = (int16_t)((3 * (int32_t)raw_dx + data->prev_raw_dx) / 4);
+    smooth_dy = (int16_t)((3 * (int32_t)raw_dy + data->prev_raw_dy) / 4);
+    if (smooth_dx == 0 && raw_dx != 0) {
+      smooth_dx = raw_dx;
+    }
+    if (smooth_dy == 0 && raw_dy != 0) {
+      smooth_dy = raw_dy;
+    }
+  } else {
+    smooth_dx = raw_dx;
+    smooth_dy = raw_dy;
+  }
+
+  data->prev_raw_dx = raw_dx;
+  data->prev_raw_dy = raw_dy;
+
+  int32_t gain;
+  if (v <= 6) {
+    gain = 12;
+  } else if (v <= 22) {
+    gain = 16;
+  } else if (v <= 50) {
+    gain = 24;
+  } else {
+    gain = 32;
+  }
+
+  int32_t scaled_x = (int32_t)smooth_dx * gain + data->subpixel_rem_x;
+  int32_t scaled_y = (int32_t)smooth_dy * gain + data->subpixel_rem_y;
+
+  *out_dx = (int16_t)(scaled_x / 16);
+  data->subpixel_rem_x = (int16_t)(scaled_x % 16);
+  *out_dy = (int16_t)(scaled_y / 16);
+  data->subpixel_rem_y = (int16_t)(scaled_y % 16);
+}
+
+static void synaptics_process_clickpad(struct synaptics_data *data,
+                                       bool physical_btn, uint8_t contacts,
+                                       uint16_t x0, uint16_t y0, int64_t now) {
+  if (physical_btn != data->prev_btn_left) {
+    const struct device *dev = data->dev;
+    data->prev_btn_left = physical_btn;
+    synaptics_flush_reports(data, now, true);
+    if (physical_btn) {
+      uint16_t btn;
+      if (contacts >= 3 || data->gesture_max_fingers >= 3) {
+        btn = INPUT_BTN_MIDDLE;
+      } else if (contacts == 2 || data->gesture_max_fingers == 2) {
+        btn = INPUT_BTN_RIGHT;
+      } else if (contacts == 1 && x0 > CLICKPAD_RIGHT_X_MIN &&
+                 y0 > CLICKPAD_RIGHT_Y_MIN) {
+        btn = INPUT_BTN_RIGHT;
+      } else {
+        btn = INPUT_BTN_LEFT;
+      }
+      data->active_phys_btn = btn;
+      data->phys_btn_used_in_touch = true;
+      input_report_key(dev, btn, 1, true, K_NO_WAIT);
+    } else {
+      uint16_t rel_btn =
+          data->active_phys_btn ? data->active_phys_btn : INPUT_BTN_LEFT;
+      input_report_key(dev, rel_btn, 0, true, K_NO_WAIT);
+      data->active_phys_btn = 0;
+    }
+  }
+}
+
 static void synaptics_tap_release_handler(struct k_work *work) {
   struct k_work_delayable *dwork = k_work_delayable_from_work(work);
   struct synaptics_data *data =
       CONTAINER_OF(dwork, struct synaptics_data, tap_release_work);
-  if (!data->is_tap_dragging) {
-    input_report_key(data->dev, INPUT_BTN_LEFT, 0, true, K_NO_WAIT);
+  if (data->is_tap_dragging) {
+    data->is_tap_dragging = false;
+    data->last_tap_release_time = 0;
   }
+  input_report_key(data->dev, INPUT_BTN_LEFT, 0, true, K_NO_WAIT);
 }
 
 static void synaptics_tap_right_release_handler(struct k_work *work) {
@@ -207,10 +302,19 @@ static void synaptics_process_liftoff(struct synaptics_data *data) {
 
   synaptics_flush_reports(data, k_uptime_get(), true);
 
+  data->grace_dx = 0;
+  data->grace_dy = 0;
+  data->in_grace_window = false;
+  data->prev_raw_dx = 0;
+  data->prev_raw_dy = 0;
+  data->subpixel_rem_x = 0;
+  data->subpixel_rem_y = 0;
+
   if (data->gesture_max_fingers >= 3) {
     if (data->prev_three_finger) {
       int64_t dur3 = k_uptime_get() - data->three_finger_start_time;
-      if (!data->three_finger_swiped && dur3 < TAP_MAX_DURATION_MS) {
+      if (!data->three_finger_swiped && !data->phys_btn_used_in_touch &&
+          dur3 < TAP_MAX_DURATION_MS) {
         /* 3-Finger Tap: Middle Click */
         input_report_key(dev, INPUT_BTN_MIDDLE, 1, true, K_NO_WAIT);
         k_work_schedule(&data->tap_middle_release_work, K_MSEC(50));
@@ -226,7 +330,8 @@ static void synaptics_process_liftoff(struct synaptics_data *data) {
   } else if (data->gesture_max_fingers == 2) {
     if (data->prev_two_finger) {
       int64_t dur2 = k_uptime_get() - data->two_finger_start_time;
-      if (!data->two_finger_scrolled && dur2 < TAP_MAX_DURATION_MS) {
+      if (!data->two_finger_scrolled && !data->phys_btn_used_in_touch &&
+          dur2 < TAP_MAX_DURATION_MS) {
         /* 2-Finger Tap: Right Click */
         input_report_key(dev, INPUT_BTN_RIGHT, 1, true, K_NO_WAIT);
         k_work_schedule(&data->tap_right_release_work, K_MSEC(50));
@@ -249,15 +354,14 @@ static void synaptics_process_liftoff(struct synaptics_data *data) {
       int64_t duration = touch_end - data->touch_start_time;
 
       if (data->is_tap_dragging) {
-        /* Drop: Release Left button immediately on finger lift */
-        data->is_tap_dragging = false;
-        input_report_key(dev, INPUT_BTN_LEFT, 0, true, K_NO_WAIT);
-        data->last_tap_release_time = 0;
-      } else if (!data->palm_suppressed && duration < TAP_MAX_DURATION_MS &&
+        /* 180 ms drag-lock continuation window before releasing Left button */
+        k_work_reschedule(&data->tap_release_work, K_MSEC(DRAG_LOCK_CONT_MS));
+      } else if (!data->palm_suppressed && !data->phys_btn_used_in_touch &&
+                 duration < TAP_MAX_DURATION_MS &&
                  data->touch_max_disp < TAP_MAX_DISPLACEMENT) {
         /* Single Tap: Click */
         input_report_key(dev, INPUT_BTN_LEFT, 1, true, K_NO_WAIT);
-        k_work_schedule(&data->tap_release_work, K_MSEC(50));
+        k_work_reschedule(&data->tap_release_work, K_MSEC(40));
         data->last_tap_release_time = touch_end;
         data->last_tap_x = data->touch_start_x;
         data->last_tap_y = data->touch_start_y;
@@ -271,6 +375,7 @@ static void synaptics_process_liftoff(struct synaptics_data *data) {
   data->prev_two_finger = false;
   data->prev_three_finger = false;
   data->palm_suppressed = false;
+  data->phys_btn_used_in_touch = false;
 }
 
 static void synaptics_work_handler(struct k_work *work) {
@@ -320,13 +425,6 @@ static void synaptics_work_handler(struct k_work *work) {
       uint8_t contact_count = buf[30];
       (void)contact_count;
 
-      /* Physical clickpad button */
-      bool physical_btn = (buf[31] & 0x01) != 0;
-      if (physical_btn != data->prev_btn_left) {
-        data->prev_btn_left = physical_btn;
-        input_report_key(dev, INPUT_BTN_LEFT, physical_btn ? 1 : 0, true, K_NO_WAIT);
-      }
-
       /* Determine active contact count from validated hardware tip+confidence slots */
       uint8_t contacts = 0;
       if (tip0) contacts++;
@@ -337,6 +435,11 @@ static void synaptics_work_handler(struct k_work *work) {
       if (contacts > data->gesture_max_fingers) {
         data->gesture_max_fingers = contacts;
       }
+
+      /* Physical clickpad button & zone routing */
+      bool physical_btn = (buf[31] & 0x01) != 0;
+      synaptics_process_clickpad(data, physical_btn, contacts, x0, y0,
+                                 k_uptime_get());
 
       /* ========================================================================= */
       /* CASE 1: ALL FINGERS LIFTED (Touch sequence completion & tap recognition)  */
@@ -351,6 +454,9 @@ static void synaptics_work_handler(struct k_work *work) {
         data->prev_touching = false;
         data->prev_two_finger = false;
         data->inertial_dy = 0;
+        data->grace_dx = 0;
+        data->grace_dy = 0;
+        data->in_grace_window = false;
 
         /* Only compute average Y from actively touching fingers */
         if (contacts >= 2) {
@@ -392,6 +498,9 @@ static void synaptics_work_handler(struct k_work *work) {
       else if (data->gesture_max_fingers == 2) {
         data->prev_touching = false;
         data->inertial_dy = 0;
+        data->grace_dx = 0;
+        data->grace_dy = 0;
+        data->in_grace_window = false;
 
         if (tip0 && tip1) {
           uint16_t avg_y = (y0 + y1) / 2;
@@ -455,6 +564,10 @@ static void synaptics_work_handler(struct k_work *work) {
           data->touch_start_y = y0;
           data->touch_max_disp = 0;
           data->inertial_dy = 0;
+          data->prev_raw_dx = 0;
+          data->prev_raw_dy = 0;
+          data->subpixel_rem_x = 0;
+          data->subpixel_rem_y = 0;
           data->palm_suppressed = (x0 < PALM_EDGE_LEFT || x0 > PALM_EDGE_RIGHT);
 
           int16_t d_tap_x = (int16_t)x0 - (int16_t)data->last_tap_x;
@@ -462,18 +575,30 @@ static void synaptics_work_handler(struct k_work *work) {
           if (d_tap_x < 0) d_tap_x = -d_tap_x;
           if (d_tap_y < 0) d_tap_y = -d_tap_y;
 
-          /* Check Tap-and-Drag double tap condition */
-          if (!data->palm_suppressed &&
-              (now - data->last_tap_release_time) < TAP_DRAG_TIMEOUT_MS &&
-              d_tap_x < TAP_DRAG_MAX_DISTANCE && d_tap_y < TAP_DRAG_MAX_DISTANCE) {
+          /* Check 180 ms drag-lock continuation or Tap-and-Drag double tap condition */
+          if (data->is_tap_dragging) {
+            k_work_cancel_delayable(&data->tap_release_work);
+            data->in_grace_window = false;
+            data->grace_dx = 0;
+            data->grace_dy = 0;
+          } else if (!data->palm_suppressed && data->last_tap_release_time > 0 &&
+                     (now - data->last_tap_release_time) < TAP_DRAG_TIMEOUT_MS &&
+                     d_tap_x < TAP_DRAG_MAX_DISTANCE &&
+                     d_tap_y < TAP_DRAG_MAX_DISTANCE) {
             data->is_tap_dragging = true;
             k_work_cancel_delayable(&data->tap_release_work);
             /* Guarantee host sees a clean release from Tap 1 before holding for drag */
             input_report_key(dev, INPUT_BTN_LEFT, 0, true, K_NO_WAIT);
             input_report_key(dev, INPUT_BTN_LEFT, 1, true, K_NO_WAIT);
             data->last_tap_release_time = 0;
+            data->in_grace_window = false;
+            data->grace_dx = 0;
+            data->grace_dy = 0;
           } else {
             data->is_tap_dragging = false;
+            data->in_grace_window = true;
+            data->grace_dx = 0;
+            data->grace_dy = 0;
           }
 
           data->prev_x0 = x0;
@@ -516,17 +641,32 @@ static void synaptics_work_handler(struct k_work *work) {
               data->touch_max_disp = (uint16_t)cur_disp_y;
             }
 
-            data->pend_dx += dx;
-            data->pend_dy += dy;
+            int16_t b_dx = 0;
+            int16_t b_dy = 0;
+            synaptics_apply_ballistics(data, dx, dy, &b_dx, &b_dy);
+
+            if (data->in_grace_window) {
+              if ((now - data->touch_start_time) < SYNAPTICS_2F_GRACE_MS &&
+                  data->touch_max_disp < SYNAPTICS_2F_GRACE_MAX_DISP) {
+                data->grace_dx += b_dx;
+                data->grace_dy += b_dy;
+              } else {
+                data->in_grace_window = false;
+                data->pend_dx += data->grace_dx + b_dx;
+                data->pend_dy += data->grace_dy + b_dy;
+                data->grace_dx = 0;
+                data->grace_dy = 0;
+              }
+            } else {
+              data->pend_dx += b_dx;
+              data->pend_dy += b_dy;
+            }
           }
         }
       }
     } else if (report_id == SYNAPTICS_REPORT_MOUSE) {
       bool btn = (buf[3] & 0x01) != 0;
-      if (btn != data->prev_btn_left) {
-        data->prev_btn_left = btn;
-        input_report_key(dev, INPUT_BTN_LEFT, btn ? 1 : 0, true, K_NO_WAIT);
-      }
+      synaptics_process_clickpad(data, btn, 0, 0, 0, k_uptime_get());
     }
   } /* End FIFO loop */
 
