@@ -336,6 +336,7 @@ static void synaptics_process_liftoff(struct synaptics_data *data) {
   const struct device *dev = data->dev;
 
   synaptics_flush_reports(data, k_uptime_get(), true);
+  data->has_ble_report = false;
 
   data->grace_dx = 0;
   data->grace_dy = 0;
@@ -588,8 +589,13 @@ static void synaptics_work_handler(struct k_work *work) {
                            TWO_FINGER_DEADZONE_TRAVEL) {
                   data->two_finger_mode = TWO_FINGER_SCROLL;
                   data->two_finger_scrolled = true;
-                  data->scroll_accum_y = dy;
-                  data->scroll_accum_x = dx;
+                  if (abs_dy >= abs_dx) {
+                    data->scroll_accum_y = dy;
+                    data->scroll_accum_x = 0;
+                  } else if (abs_dx > (abs_dy * 2)) {
+                    data->scroll_accum_x = dx;
+                    data->scroll_accum_y = 0;
+                  }
                 }
               } else if (data->two_finger_mode == TWO_FINGER_PINCH) {
                 if ((d_span > 0 && data->pinch_accum < 0) ||
