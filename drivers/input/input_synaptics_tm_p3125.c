@@ -24,14 +24,14 @@ LOG_MODULE_REGISTER(synaptics_tm_p3125, LOG_LEVEL_INF);
 #define SYNAPTICS_PTP_REPORT_LEN 32
 #define SYNAPTICS_MAX_PACKETS_PER_PASS 6
 #define SYNAPTICS_BLE_FRAME_MS 8
-#define SYNAPTICS_GAP_RESET_MS 45
-#define SYNAPTICS_LIFTOFF_TIMEOUT_MS 85
+#define SYNAPTICS_GAP_RESET_MS 35
+#define SYNAPTICS_LIFTOFF_TIMEOUT_MS 20
 
 /* Precision tap & drag timings (libinput & Windows PTP standard) */
-#define TAP_MAX_DURATION_MS 280
+#define TAP_MAX_DURATION_MS 320
 #define TAP_MAX_DISPLACEMENT 90
-#define TAP_DRAG_TIMEOUT_MS 400
-#define TAP_DRAG_MAX_DISTANCE 140
+#define TAP_DRAG_TIMEOUT_MS 450
+#define TAP_DRAG_MAX_DISTANCE 320
 #define DRAG_LOCK_CONT_MS 180
 
 /* 1F->2F landing grace window & physical clickpad zones */
@@ -124,6 +124,7 @@ struct synaptics_data {
   uint16_t two_finger_travel;
   int16_t two_finger_span_delta;
   int16_t pinch_accum;
+  int64_t last_pinch_time;
   uint16_t prev_scroll_x;
   uint16_t prev_scroll_y;
   int16_t scroll_accum_y;
@@ -613,21 +614,25 @@ static void synaptics_work_handler(struct k_work *work) {
                 }
               }
 
-              while (data->two_finger_mode == TWO_FINGER_PINCH &&
-                     data->pinch_accum >= PINCH_STEP) {
-                k_work_cancel_delayable(&data->pinch_in_release_work);
-                input_report_key(dev, INPUT_BTN_5, 0, true, K_NO_WAIT);
-                input_report_key(dev, INPUT_BTN_5, 1, true, K_NO_WAIT);
-                k_work_reschedule(&data->pinch_in_release_work, K_MSEC(35));
-                data->pinch_accum -= PINCH_STEP;
-              }
-              while (data->two_finger_mode == TWO_FINGER_PINCH &&
-                     data->pinch_accum <= -PINCH_STEP) {
-                k_work_cancel_delayable(&data->pinch_out_release_work);
-                input_report_key(dev, INPUT_BTN_6, 0, true, K_NO_WAIT);
-                input_report_key(dev, INPUT_BTN_6, 1, true, K_NO_WAIT);
-                k_work_reschedule(&data->pinch_out_release_work, K_MSEC(35));
-                data->pinch_accum += PINCH_STEP;
+              int64_t now_ms = k_uptime_get();
+              if (data->two_finger_mode == TWO_FINGER_PINCH &&
+                  data->pinch_accum >= PINCH_STEP) {
+                if ((now_ms - data->last_pinch_time) >= 60) {
+                  data->last_pinch_time = now_ms;
+                  k_work_cancel_delayable(&data->pinch_in_release_work);
+                  input_report_key(dev, INPUT_BTN_5, 1, true, K_NO_WAIT);
+                  k_work_reschedule(&data->pinch_in_release_work, K_MSEC(25));
+                  data->pinch_accum = 0;
+                }
+              } else if (data->two_finger_mode == TWO_FINGER_PINCH &&
+                         data->pinch_accum <= -PINCH_STEP) {
+                if ((now_ms - data->last_pinch_time) >= 60) {
+                  data->last_pinch_time = now_ms;
+                  k_work_cancel_delayable(&data->pinch_out_release_work);
+                  input_report_key(dev, INPUT_BTN_6, 1, true, K_NO_WAIT);
+                  k_work_reschedule(&data->pinch_out_release_work, K_MSEC(25));
+                  data->pinch_accum = 0;
+                }
               }
 
               if (data->two_finger_mode == TWO_FINGER_SCROLL) {
@@ -659,6 +664,16 @@ static void synaptics_work_handler(struct k_work *work) {
             data->last_scroll_dy = 0;
             data->prev_two_finger = true;
           }
+        } else {
+          /* Dropout: one finger lifted or lost confidence (e.g. at sensor boundary) */
+          if (data->two_finger_mode == TWO_FINGER_PINCH) {
+            k_work_cancel_delayable(&data->pinch_in_release_work);
+            k_work_cancel_delayable(&data->pinch_out_release_work);
+            input_report_key(dev, INPUT_BTN_5, 0, true, K_NO_WAIT);
+            input_report_key(dev, INPUT_BTN_6, 0, true, K_NO_WAIT);
+            data->two_finger_mode = TWO_FINGER_IDLE;
+            data->pinch_accum = 0;
+          }
         }
       }
       /* ========================================================================= */
@@ -666,6 +681,30 @@ static void synaptics_work_handler(struct k_work *work) {
       /* ========================================================================= */
       else if (data->gesture_max_fingers == 1 && tip0) {
         int64_t now = k_uptime_get();
+        int16_t raw_dx = (int16_t)x0 - (int16_t)data->prev_x0;
+        int16_t raw_dy = (int16_t)y0 - (int16_t)data->prev_y0;
+        int16_t abs_raw_dx = (raw_dx >= 0) ? raw_dx : -raw_dx;
+        int16_t abs_raw_dy = (raw_dy >= 0) ? raw_dy : -raw_dy;
+
+        /* Check for liftoff / reposition discontinuity even if no 0x00 packet arrived */
+        if (data->prev_touching && !data->palm_suppressed &&
+            ((now - data->prev_x0_time) > SYNAPTICS_GAP_RESET_MS ||
+             abs_raw_dx >= 140 ||
+             abs_raw_dy >= 140)) {
+          int64_t prev_dur = data->prev_x0_time - data->touch_start_time;
+          if (!data->phys_btn_used_in_touch &&
+              !data->is_tap_dragging &&
+              prev_dur < TAP_MAX_DURATION_MS &&
+              data->touch_max_disp < TAP_MAX_DISPLACEMENT) {
+            /* Conclude previous touch as a valid single tap click */
+            input_report_key(dev, INPUT_BTN_LEFT, 1, true, K_NO_WAIT);
+            k_work_reschedule(&data->tap_release_work, K_MSEC(40));
+            data->last_tap_release_time = data->prev_x0_time;
+            data->last_tap_x = data->touch_start_x;
+            data->last_tap_y = data->touch_start_y;
+          }
+          data->prev_touching = false;
+        }
 
         /* Fresh Touch Down when previous touch was lifted */
         if (!data->prev_touching) {
@@ -725,24 +764,16 @@ static void synaptics_work_handler(struct k_work *work) {
             data->touch_start_x = x0;
             data->touch_start_y = y0;
           }
-        } else if ((now - data->prev_x0_time) > SYNAPTICS_GAP_RESET_MS) {
-          data->prev_x0 = x0;
-          data->prev_y0 = y0;
-          data->prev_x0_time = now;
-          data->prev_raw_dx = 0;
-          data->prev_raw_dy = 0;
-          data->subpixel_rem_x = 0;
-          data->subpixel_rem_y = 0;
         } else {
           /* Continuous dragging/moving: strictly compute delta from previous position */
-          int16_t dx = (int16_t)x0 - (int16_t)data->prev_x0;
-          int16_t dy = (int16_t)y0 - (int16_t)data->prev_y0;
+          int16_t dx = raw_dx;
+          int16_t dy = raw_dy;
 
           data->prev_x0 = x0;
           data->prev_y0 = y0;
           data->prev_x0_time = now;
 
-          /* Filter out abnormal positional teleportation / glitch jumps (>= 250 units) */
+          /* Filter out abnormal positional teleportation / glitch jumps */
           if (dx > -250 && dx < 250 && dy > -250 && dy < 250) {
             /* Displacement from touch down point */
             int16_t cur_disp_x = (int16_t)x0 - (int16_t)data->touch_start_x;
@@ -810,7 +841,7 @@ static void synaptics_work_handler(struct k_work *work) {
     k_work_reschedule(&data->work, K_MSEC(SYNAPTICS_BLE_FRAME_MS));
   } else if (data->prev_touching || data->prev_two_finger ||
              data->prev_three_finger || data->gesture_max_fingers > 0) {
-    k_work_reschedule(&data->work, K_MSEC(35));
+    k_work_reschedule(&data->work, K_MSEC(20));
   }
 }
 
@@ -924,6 +955,7 @@ static int synaptics_init(const struct device *dev) {
   k_work_init_delayable(&data->pinch_in_release_work, synaptics_pinch_in_release_handler);
   k_work_init_delayable(&data->pinch_out_release_work, synaptics_pinch_out_release_handler);
   k_work_init_delayable(&data->inertial_scroll_work, synaptics_inertial_scroll_handler);
+  data->last_pinch_time = -100;
 
   if (!i2c_is_ready_dt(&config->i2c) || !gpio_is_ready_dt(&config->irq_gpio)) {
     return -ENODEV;
