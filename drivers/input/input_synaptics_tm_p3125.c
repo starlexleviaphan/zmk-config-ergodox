@@ -25,13 +25,14 @@ LOG_MODULE_REGISTER(synaptics_tm_p3125, LOG_LEVEL_INF);
 #define SYNAPTICS_MAX_PACKETS_PER_PASS 6
 #define SYNAPTICS_BLE_FRAME_MS 8
 #define SYNAPTICS_GAP_RESET_MS 45
-#define SYNAPTICS_LIFTOFF_TIMEOUT_MS 95
+#define SYNAPTICS_LIFTOFF_TIMEOUT_MS 250
+#define SYNAPTICS_DRAG_TIMEOUT_MS 1500
 
 /* Precision tap & drag timings (libinput & Windows PTP standard) */
-#define TAP_MAX_DURATION_MS 320
-#define TAP_MAX_DISPLACEMENT 90
-#define TAP_DRAG_TIMEOUT_MS 450
-#define TAP_DRAG_MAX_DISTANCE 320
+#define TAP_MAX_DURATION_MS 350
+#define TAP_MAX_DISPLACEMENT 130
+#define TAP_DRAG_TIMEOUT_MS 500
+#define TAP_DRAG_MAX_DISTANCE 420
 #define DRAG_LOCK_CONT_MS 180
 
 /* 1F->2F landing grace window & physical clickpad zones */
@@ -460,7 +461,8 @@ static void synaptics_work_handler(struct k_work *work) {
     if (report_id == SYNAPTICS_REPORT_TOUCH) {
       /* Slot 0 (Finger 1) */
       uint8_t status0 = buf[3];
-      bool tip0 = synaptics_slot_valid(status0);
+      bool tip0 = data->is_tap_dragging ? ((status0 & 0x02) != 0)
+                                        : synaptics_slot_valid(status0);
       uint16_t x0 = (uint16_t)(buf[4] | (buf[5] << 8));
       uint16_t y0 = (uint16_t)(buf[6] | (buf[7] << 8));
 
@@ -761,7 +763,18 @@ static void synaptics_work_handler(struct k_work *work) {
           data->prev_x0_time = now;
 
           /* Filter out abnormal positional teleportation / glitch jumps */
-          if (dx > -250 && dx < 250 && dy > -250 && dy < 250) {
+          int16_t abs_dx = (dx >= 0) ? dx : -dx;
+          int16_t abs_dy = (dy >= 0) ? dy : -dy;
+
+          /* Reject sudden teleportation jump when not already in rapid motion */
+          if ((abs_dx > 80 || abs_dy > 80) &&
+              data->prev_raw_dx < 35 && data->prev_raw_dx > -35 &&
+              data->prev_raw_dy < 35 && data->prev_raw_dy > -35) {
+            data->prev_raw_dx = 0;
+            data->prev_raw_dy = 0;
+            data->subpixel_rem_x = 0;
+            data->subpixel_rem_y = 0;
+          } else if (abs_dx < 250 && abs_dy < 250) {
             /* Displacement from touch down point */
             int16_t cur_disp_x = (int16_t)x0 - (int16_t)data->touch_start_x;
             int16_t cur_disp_y = (int16_t)y0 - (int16_t)data->touch_start_y;
@@ -806,9 +819,11 @@ static void synaptics_work_handler(struct k_work *work) {
   /* Flush coalesced BLE movement/scroll reports when 8 ms frame window expires */
   synaptics_flush_reports(data, k_uptime_get(), false);
 
-  /* Inactivity check: if sensor produced no packets for >= SYNAPTICS_LIFTOFF_TIMEOUT_MS, process liftoff */
+  /* Inactivity check: if sensor produced no packets for timeout, process liftoff */
   if (packets_read == 0) {
-    if ((k_uptime_get() - data->last_packet_time) >= SYNAPTICS_LIFTOFF_TIMEOUT_MS) {
+    int64_t inactive_ms = k_uptime_get() - data->last_packet_time;
+    int64_t timeout_ms = data->is_tap_dragging ? SYNAPTICS_DRAG_TIMEOUT_MS : SYNAPTICS_LIFTOFF_TIMEOUT_MS;
+    if (inactive_ms >= timeout_ms) {
       if (data->prev_touching || data->prev_two_finger || data->prev_three_finger ||
           data->gesture_max_fingers > 0 || data->is_tap_dragging) {
         synaptics_process_liftoff(data);
@@ -819,7 +834,7 @@ static void synaptics_work_handler(struct k_work *work) {
   /* Scheduling:
    * 1. If INT pin is still asserted, reschedule in 1 ms to continue draining FIFO.
    * 2. If un-flushed deltas remain pending, schedule flush at SYNAPTICS_BLE_FRAME_MS.
-   * 3. If fingers are still active, schedule liftoff check at 35 ms.
+   * 3. If fingers are still active or dragging, schedule check at 20 ms.
    */
   if (gpio_pin_get_dt(&config->irq_gpio) > 0) {
     k_work_reschedule(&data->work, K_MSEC(1));
@@ -827,7 +842,8 @@ static void synaptics_work_handler(struct k_work *work) {
              data->pend_wheel != 0 || data->pend_hwheel != 0) {
     k_work_reschedule(&data->work, K_MSEC(SYNAPTICS_BLE_FRAME_MS));
   } else if (data->prev_touching || data->prev_two_finger ||
-             data->prev_three_finger || data->gesture_max_fingers > 0) {
+             data->prev_three_finger || data->gesture_max_fingers > 0 ||
+             data->is_tap_dragging) {
     k_work_reschedule(&data->work, K_MSEC(20));
   }
 }
