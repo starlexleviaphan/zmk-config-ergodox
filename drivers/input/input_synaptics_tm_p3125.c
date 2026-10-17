@@ -24,8 +24,8 @@ LOG_MODULE_REGISTER(synaptics_tm_p3125, LOG_LEVEL_INF);
 #define SYNAPTICS_PTP_REPORT_LEN 32
 #define SYNAPTICS_MAX_PACKETS_PER_PASS 6
 #define SYNAPTICS_BLE_FRAME_MS 8
-#define SYNAPTICS_GAP_RESET_MS 35
-#define SYNAPTICS_LIFTOFF_TIMEOUT_MS 20
+#define SYNAPTICS_GAP_RESET_MS 45
+#define SYNAPTICS_LIFTOFF_TIMEOUT_MS 95
 
 /* Precision tap & drag timings (libinput & Windows PTP standard) */
 #define TAP_MAX_DURATION_MS 320
@@ -403,8 +403,11 @@ static void synaptics_process_liftoff(struct synaptics_data *data) {
       int64_t duration = touch_end - data->touch_start_time;
 
       if (data->is_tap_dragging) {
-        /* 180 ms drag-lock continuation window before releasing Left button */
-        k_work_reschedule(&data->tap_release_work, K_MSEC(DRAG_LOCK_CONT_MS));
+        /* Release Left button immediately upon finger liftoff */
+        k_work_cancel_delayable(&data->tap_release_work);
+        input_report_key(dev, INPUT_BTN_LEFT, 0, true, K_NO_WAIT);
+        data->is_tap_dragging = false;
+        data->last_tap_release_time = 0;
       } else if (!data->palm_suppressed && !data->phys_btn_used_in_touch &&
                  duration < TAP_MAX_DURATION_MS &&
                  data->touch_max_disp < TAP_MAX_DISPLACEMENT) {
@@ -681,30 +684,6 @@ static void synaptics_work_handler(struct k_work *work) {
       /* ========================================================================= */
       else if (data->gesture_max_fingers == 1 && tip0) {
         int64_t now = k_uptime_get();
-        int16_t raw_dx = (int16_t)x0 - (int16_t)data->prev_x0;
-        int16_t raw_dy = (int16_t)y0 - (int16_t)data->prev_y0;
-        int16_t abs_raw_dx = (raw_dx >= 0) ? raw_dx : -raw_dx;
-        int16_t abs_raw_dy = (raw_dy >= 0) ? raw_dy : -raw_dy;
-
-        /* Check for liftoff / reposition discontinuity even if no 0x00 packet arrived */
-        if (data->prev_touching && !data->palm_suppressed &&
-            ((now - data->prev_x0_time) > SYNAPTICS_GAP_RESET_MS ||
-             abs_raw_dx >= 140 ||
-             abs_raw_dy >= 140)) {
-          int64_t prev_dur = data->prev_x0_time - data->touch_start_time;
-          if (!data->phys_btn_used_in_touch &&
-              !data->is_tap_dragging &&
-              prev_dur < TAP_MAX_DURATION_MS &&
-              data->touch_max_disp < TAP_MAX_DISPLACEMENT) {
-            /* Conclude previous touch as a valid single tap click */
-            input_report_key(dev, INPUT_BTN_LEFT, 1, true, K_NO_WAIT);
-            k_work_reschedule(&data->tap_release_work, K_MSEC(40));
-            data->last_tap_release_time = data->prev_x0_time;
-            data->last_tap_x = data->touch_start_x;
-            data->last_tap_y = data->touch_start_y;
-          }
-          data->prev_touching = false;
-        }
 
         /* Fresh Touch Down when previous touch was lifted */
         if (!data->prev_touching) {
@@ -764,10 +743,18 @@ static void synaptics_work_handler(struct k_work *work) {
             data->touch_start_x = x0;
             data->touch_start_y = y0;
           }
+        } else if ((now - data->prev_x0_time) > SYNAPTICS_GAP_RESET_MS) {
+          data->prev_x0 = x0;
+          data->prev_y0 = y0;
+          data->prev_x0_time = now;
+          data->prev_raw_dx = 0;
+          data->prev_raw_dy = 0;
+          data->subpixel_rem_x = 0;
+          data->subpixel_rem_y = 0;
         } else {
           /* Continuous dragging/moving: strictly compute delta from previous position */
-          int16_t dx = raw_dx;
-          int16_t dy = raw_dy;
+          int16_t dx = (int16_t)x0 - (int16_t)data->prev_x0;
+          int16_t dy = (int16_t)y0 - (int16_t)data->prev_y0;
 
           data->prev_x0 = x0;
           data->prev_y0 = y0;
