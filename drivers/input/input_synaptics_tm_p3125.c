@@ -141,6 +141,7 @@ struct synaptics_data {
   int64_t three_finger_start_time;
   uint16_t three_finger_start_y;
   bool three_finger_swiped;
+  uint16_t active_swipe_btn;
 
   /* Physical clickpad button & zone state */
   bool prev_btn_left;
@@ -305,6 +306,9 @@ static void synaptics_swipe_up_release_handler(struct k_work *work) {
   struct synaptics_data *data =
       CONTAINER_OF(dwork, struct synaptics_data, swipe_up_release_work);
   input_report_key(data->dev, INPUT_BTN_3, 0, true, K_NO_WAIT);
+  if (data->active_swipe_btn == INPUT_BTN_3) {
+    data->active_swipe_btn = 0;
+  }
 }
 
 static void synaptics_swipe_down_release_handler(struct k_work *work) {
@@ -312,6 +316,9 @@ static void synaptics_swipe_down_release_handler(struct k_work *work) {
   struct synaptics_data *data =
       CONTAINER_OF(dwork, struct synaptics_data, swipe_down_release_work);
   input_report_key(data->dev, INPUT_BTN_4, 0, true, K_NO_WAIT);
+  if (data->active_swipe_btn == INPUT_BTN_4) {
+    data->active_swipe_btn = 0;
+  }
 }
 
 static void synaptics_pinch_in_release_handler(struct k_work *work) {
@@ -359,14 +366,15 @@ static void synaptics_process_liftoff(struct synaptics_data *data,
       }
       data->prev_three_finger = false;
     }
-    if (data->three_finger_swiped) {
-      /* Guarantee any 3-finger swipe modifier is immediately released upon finger lift */
+    if (data->active_swipe_btn != 0) {
+      /* Guarantee active 3-finger swipe modifier is immediately released upon finger lift */
+      uint16_t btn = data->active_swipe_btn;
+      data->active_swipe_btn = 0;
       k_work_cancel_delayable(&data->swipe_up_release_work);
       k_work_cancel_delayable(&data->swipe_down_release_work);
-      input_report_key(dev, INPUT_BTN_3, 0, true, K_NO_WAIT);
-      input_report_key(dev, INPUT_BTN_4, 0, true, K_NO_WAIT);
-      data->three_finger_swiped = false;
+      input_report_key(dev, btn, 0, true, K_NO_WAIT);
     }
+    data->three_finger_swiped = false;
   } else if (data->gesture_max_fingers == 2) {
     if (data->prev_two_finger) {
       int64_t dur2 = k_uptime_get() - data->two_finger_start_time;
@@ -514,16 +522,9 @@ static void synaptics_work_handler(struct k_work *work) {
         data->grace_dy = 0;
         data->in_grace_window = false;
 
-        /* Only compute average Y from actively touching fingers */
-        if (contacts >= 2) {
-          uint16_t avg3_y;
-          if (tip0 && tip1 && tip2) {
-            avg3_y = (y0 + y1 + y2) / 3;
-          } else if (tip0 && tip1) {
-            avg3_y = (y0 + y1) / 2;
-          } else {
-            avg3_y = y0;
-          }
+        /* Only compute average Y when strictly 3 fingers are actively touching */
+        if (contacts >= 3 && tip0 && tip1 && tip2) {
+          uint16_t avg3_y = (y0 + y1 + y2) / 3;
 
           if (data->prev_three_finger) {
             int16_t swipe_dy = (int16_t)avg3_y - (int16_t)data->three_finger_start_y;
@@ -531,11 +532,13 @@ static void synaptics_work_handler(struct k_work *work) {
               if (swipe_dy < -THREE_FINGER_SWIPE_THRESHOLD) {
                 /* Swipe Up: Task View (Win+Tab via INPUT_BTN_3) with safe delayed release */
                 input_report_key(dev, INPUT_BTN_3, 1, true, K_NO_WAIT);
+                data->active_swipe_btn = INPUT_BTN_3;
                 k_work_reschedule(&data->swipe_up_release_work, K_MSEC(40));
                 data->three_finger_swiped = true;
               } else if (swipe_dy > THREE_FINGER_SWIPE_THRESHOLD) {
                 /* Swipe Down: Show Desktop (Win+D via INPUT_BTN_4) with safe delayed release */
                 input_report_key(dev, INPUT_BTN_4, 1, true, K_NO_WAIT);
+                data->active_swipe_btn = INPUT_BTN_4;
                 k_work_reschedule(&data->swipe_down_release_work, K_MSEC(40));
                 data->three_finger_swiped = true;
               }
@@ -768,15 +771,13 @@ static void synaptics_work_handler(struct k_work *work) {
           int16_t abs_dx = (dx >= 0) ? dx : -dx;
           int16_t abs_dy = (dy >= 0) ? dy : -dy;
 
-          /* Reject sudden teleportation jump when not already in rapid motion */
-          if ((abs_dx > 80 || abs_dy > 80) &&
-              data->prev_raw_dx < 35 && data->prev_raw_dx > -35 &&
-              data->prev_raw_dy < 35 && data->prev_raw_dy > -35) {
+          /* Reject abnormal teleportation / glitch jumps >= 250 units */
+          if (abs_dx >= 250 || abs_dy >= 250) {
             data->prev_raw_dx = 0;
             data->prev_raw_dy = 0;
             data->subpixel_rem_x = 0;
             data->subpixel_rem_y = 0;
-          } else if (abs_dx < 250 && abs_dy < 250) {
+          } else {
             /* Displacement from touch down point */
             int16_t cur_disp_x = (int16_t)x0 - (int16_t)data->touch_start_x;
             int16_t cur_disp_y = (int16_t)y0 - (int16_t)data->touch_start_y;
