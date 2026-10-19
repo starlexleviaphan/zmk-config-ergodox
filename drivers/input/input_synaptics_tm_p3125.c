@@ -29,11 +29,12 @@ LOG_MODULE_REGISTER(synaptics_tm_p3125, LOG_LEVEL_INF);
 #define SYNAPTICS_DRAG_TIMEOUT_MS 3000
 
 /* Physical calibration constants for Synaptics TM-P3125 (11.55 counts/mm) */
-#define TAP_MAX_DURATION_MS 260        /* Comfortable human tap window */
+#define TAP_MAX_DURATION_MS 240        /* Maximum duration of a single tap contact */
 #define TAP_MAX_DISPLACEMENT 45        /* ~3.9 mm (accommodates finger pad squish, rejects moves) */
-#define TAP_DRAG_TIMEOUT_MS 320        /* Comfortable double-tap interval */
-#define TAP_DRAG_MAX_DISTANCE 60       /* ~5.2 mm landing zone (easy to hit, prevents jumps) */
-#define DRAG_LOCK_CONT_MS 180
+#define TAP_DRAG_TIMEOUT_MS 220        /* Time window after Tap 1 liftoff to initiate tap-and-drag */
+#define TAP_DRAG_MAX_DISTANCE 140      /* ~12.1 mm natural landing zone between Tap 1 and Tap 2 */
+#define DRAG_LOCK_TIMEOUT_MS 180       /* Time window for finger repositioning during active drag */
+#define DRAG_MOVE_THRESHOLD 15         /* ~1.3 mm movement threshold during Tap 2 to differentiate drag */
 
 /* 1F->2F landing grace window & physical clickpad zones */
 #define SYNAPTICS_2F_GRACE_MS 20
@@ -111,7 +112,9 @@ struct synaptics_data {
   uint16_t last_tap_x;
   uint16_t last_tap_y;
   int64_t last_tap_release_time;
+  bool tap_pending;
   bool is_tap_dragging;
+  bool drag_moved;
 
   /* 2-Finger scroll & Inertia tracking */
   bool prev_two_finger;
@@ -243,6 +246,14 @@ static void synaptics_process_clickpad(struct synaptics_data *data,
     data->prev_btn_left = physical_btn;
     synaptics_flush_reports(data, now, true);
     if (physical_btn) {
+      if (data->is_tap_dragging || data->tap_pending) {
+        k_work_cancel_delayable(&data->tap_release_work);
+        input_report_key(dev, INPUT_BTN_LEFT, 0, true, K_NO_WAIT);
+        data->is_tap_dragging = false;
+        data->tap_pending = false;
+        data->last_tap_release_time = 0;
+        data->drag_moved = false;
+      }
       uint16_t btn;
       if (contacts >= 3 || data->gesture_max_fingers >= 3) {
         btn = INPUT_BTN_MIDDLE;
@@ -276,6 +287,9 @@ static void synaptics_tap_release_handler(struct k_work *work) {
     return;
   }
   input_report_key(data->dev, INPUT_BTN_LEFT, 0, true, K_NO_WAIT);
+  data->tap_pending = false;
+  data->last_tap_release_time = 0;
+  LOG_INF("[TP] >>> SINGLE TAP COMPLETED (BTN_LEFT UP) <<<");
 }
 
 static void synaptics_tap_right_release_handler(struct k_work *work) {
@@ -386,23 +400,36 @@ static void synaptics_process_liftoff(struct synaptics_data *data,
       int64_t duration = touch_end - data->touch_start_time;
 
       if (data->is_tap_dragging) {
-        /* Release Left button immediately upon physical liftoff or drag watchdog */
         k_work_cancel_delayable(&data->tap_release_work);
-        input_report_key(dev, INPUT_BTN_LEFT, 0, true, K_NO_WAIT);
-        data->is_tap_dragging = false;
-        data->last_tap_release_time = 0;
-        LOG_INF("[TP] >>> TAP-AND-DRAG RELEASED (BTN_LEFT UP) <<<");
+        if (data->drag_moved || duration >= TAP_MAX_DURATION_MS) {
+          /* Drag completed: clean release of Left button */
+          input_report_key(dev, INPUT_BTN_LEFT, 0, true, K_NO_WAIT);
+          data->is_tap_dragging = false;
+          data->last_tap_release_time = 0;
+          data->drag_moved = false;
+          LOG_INF("[TP] >>> DRAG RELEASED (BTN_LEFT UP) <<<");
+        } else {
+          /* Double Click: tapped twice without moving */
+          input_report_key(dev, INPUT_BTN_LEFT, 0, true, K_NO_WAIT);
+          input_report_key(dev, INPUT_BTN_LEFT, 1, true, K_NO_WAIT);
+          k_work_reschedule(&data->tap_release_work, K_MSEC(40));
+          data->is_tap_dragging = false;
+          data->last_tap_release_time = 0;
+          data->drag_moved = false;
+          LOG_INF("[TP] >>> DOUBLE CLICK COMPLETED <<<");
+        }
       } else if (!data->palm_suppressed &&
                  !data->phys_btn_used_in_touch &&
                  duration < TAP_MAX_DURATION_MS &&
                  data->touch_max_disp < TAP_MAX_DISPLACEMENT) {
-        /* Single Tap: Click */
+        /* Single Tap: Hold Left button down and schedule release for TAP_DRAG_TIMEOUT_MS */
         input_report_key(dev, INPUT_BTN_LEFT, 1, true, K_NO_WAIT);
-        k_work_reschedule(&data->tap_release_work, K_MSEC(40));
+        k_work_reschedule(&data->tap_release_work, K_MSEC(TAP_DRAG_TIMEOUT_MS));
+        data->tap_pending = true;
         data->last_tap_release_time = touch_end;
         data->last_tap_x = data->touch_start_x;
         data->last_tap_y = data->touch_start_y;
-        LOG_INF("[TP] >>> TAP CLICK EMITTED (BTN_LEFT, dur=%lld ms, disp=%d) <<<",
+        LOG_INF("[TP] >>> TAP CLICK DOWN (BTN_LEFT, pending drag, dur=%lld ms, disp=%d) <<<",
                 (long long)duration, data->touch_max_disp);
       } else {
         LOG_INF("[TP] Tap rejected: dur=%lld (limit %d), disp=%d (limit %d), palm=%d, btn_used=%d",
@@ -497,6 +524,14 @@ static void synaptics_work_handler(struct k_work *work) {
       /* CASE 2: ACTIVE 3-FINGER GESTURE (Task View / Show Desktop)                */
       /* ========================================================================= */
       else if (data->gesture_max_fingers >= 3) {
+        if (data->is_tap_dragging || data->tap_pending) {
+          k_work_cancel_delayable(&data->tap_release_work);
+          input_report_key(dev, INPUT_BTN_LEFT, 0, true, K_NO_WAIT);
+          data->is_tap_dragging = false;
+          data->tap_pending = false;
+          data->last_tap_release_time = 0;
+          data->drag_moved = false;
+        }
         data->prev_touching = false;
         data->prev_two_finger = false;
         data->inertial_dy = 0;
@@ -542,6 +577,14 @@ static void synaptics_work_handler(struct k_work *work) {
       /* CASE 3: ACTIVE 2-FINGER GESTURE (Anti-Jitter Tap & 2F Natural Scroll)     */
       /* ========================================================================= */
       else if (data->gesture_max_fingers == 2) {
+        if (data->is_tap_dragging || data->tap_pending) {
+          k_work_cancel_delayable(&data->tap_release_work);
+          input_report_key(dev, INPUT_BTN_LEFT, 0, true, K_NO_WAIT);
+          data->is_tap_dragging = false;
+          data->tap_pending = false;
+          data->last_tap_release_time = 0;
+          data->drag_moved = false;
+        }
         data->prev_touching = false;
         data->inertial_dy = 0;
         data->grace_dx = 0;
@@ -641,28 +684,32 @@ static void synaptics_work_handler(struct k_work *work) {
           if (d_tap_x < 0) d_tap_x = -d_tap_x;
           if (d_tap_y < 0) d_tap_y = -d_tap_y;
 
-          /* Check 180 ms drag-lock continuation or Tap-and-Drag double tap condition */
+          /* Check drag continuation or Tap-and-Drag initiation condition */
           if (data->is_tap_dragging) {
             k_work_cancel_delayable(&data->tap_release_work);
             data->in_grace_window = false;
             data->grace_dx = 0;
             data->grace_dy = 0;
             LOG_INF("[TP] >>> TAP-AND-DRAG CONTINUED (BTN_LEFT HELD) <<<");
-          } else if (!data->palm_suppressed && data->last_tap_release_time > 0 &&
+          } else if (!data->palm_suppressed && data->tap_pending &&
                      (now - data->last_tap_release_time) < TAP_DRAG_TIMEOUT_MS &&
                      d_tap_x < TAP_DRAG_MAX_DISTANCE &&
                      d_tap_y < TAP_DRAG_MAX_DISTANCE) {
-            data->is_tap_dragging = true;
             k_work_cancel_delayable(&data->tap_release_work);
-            /* Guarantee host sees a clean release from Tap 1 before holding for drag */
-            input_report_key(dev, INPUT_BTN_LEFT, 0, true, K_NO_WAIT);
-            input_report_key(dev, INPUT_BTN_LEFT, 1, true, K_NO_WAIT);
-            data->last_tap_release_time = 0;
+            data->is_tap_dragging = true;
+            data->tap_pending = false;
+            data->drag_moved = false;
             data->in_grace_window = false;
             data->grace_dx = 0;
             data->grace_dy = 0;
-            LOG_INF("[TP] >>> TAP-AND-DRAG ACTIVATED (BTN_LEFT DOWN, d_tap=(%d,%d)) <<<", d_tap_x, d_tap_y);
+            LOG_INF("[TP] >>> TAP-AND-DRAG ACTIVE (BTN_LEFT HELD) <<<");
           } else {
+            if (data->tap_pending) {
+              k_work_cancel_delayable(&data->tap_release_work);
+              input_report_key(dev, INPUT_BTN_LEFT, 0, true, K_NO_WAIT);
+              data->tap_pending = false;
+              LOG_INF("[TP] >>> PENDING TAP RELEASED (BTN_LEFT UP) <<<");
+            }
             data->is_tap_dragging = false;
             data->last_tap_release_time = 0;
             data->in_grace_window = true;
@@ -723,6 +770,10 @@ static void synaptics_work_handler(struct k_work *work) {
             }
             if ((uint16_t)cur_disp_y > data->touch_max_disp) {
               data->touch_max_disp = (uint16_t)cur_disp_y;
+            }
+
+            if (data->is_tap_dragging && data->touch_max_disp > DRAG_MOVE_THRESHOLD) {
+              data->drag_moved = true;
             }
 
             int16_t b_dx = 0;
