@@ -29,15 +29,15 @@ LOG_MODULE_REGISTER(synaptics_tm_p3125, LOG_LEVEL_INF);
 #define SYNAPTICS_DRAG_TIMEOUT_MS 3000
 
 /* Physical calibration constants for Synaptics TM-P3125 (11.55 counts/mm) */
-#define TAP_MAX_DURATION_MS 180
-#define TAP_MAX_DISPLACEMENT 22        /* ~1.9 mm (libinput standard: 1.3 - 2.0 mm) */
-#define TAP_DRAG_TIMEOUT_MS 280        /* libinput standard: 250 - 300 ms */
-#define TAP_DRAG_MAX_DISTANCE 40       /* ~3.5 mm single-finger landing zone */
+#define TAP_MAX_DURATION_MS 260        /* Comfortable human tap window */
+#define TAP_MAX_DISPLACEMENT 45        /* ~3.9 mm (accommodates finger pad squish, rejects moves) */
+#define TAP_DRAG_TIMEOUT_MS 320        /* Comfortable double-tap interval */
+#define TAP_DRAG_MAX_DISTANCE 60       /* ~5.2 mm landing zone (easy to hit, prevents jumps) */
 #define DRAG_LOCK_CONT_MS 180
 
 /* 1F->2F landing grace window & physical clickpad zones */
 #define SYNAPTICS_2F_GRACE_MS 20
-#define SYNAPTICS_2F_GRACE_MAX_DISP 18  /* ~1.5 mm landing settling */
+#define SYNAPTICS_2F_GRACE_MAX_DISP 22  /* ~1.9 mm landing settling */
 #define CLICKPAD_RIGHT_X_MIN 650
 #define CLICKPAD_RIGHT_Y_MIN 650
 
@@ -49,7 +49,6 @@ LOG_MODULE_REGISTER(synaptics_tm_p3125, LOG_LEVEL_INF);
 #define PINCH_STEP 55                  /* ~4.8 mm span change per zoom step */
 #define THREE_FINGER_SWIPE_THRESHOLD 120
 #define JITTER_DEADZONE_COUNTS 3       /* ~0.26 mm stationary hysteresis */
-#define FOUR_FINGER_TAP_MAX_DURATION_MS 250
 #define THREE_FINGER_GESTURES_DEFAULT false
 
 /* Palm rejection: edge exclusion margin and interior recovery (Sensor X range: 0..1219) */
@@ -145,10 +144,6 @@ struct synaptics_data {
   uint16_t three_finger_start_y;
   bool three_finger_swiped;
   uint16_t active_swipe_btn;
-
-  /* 4-Finger gesture tracking & 3F toggle */
-  bool prev_four_finger;
-  int64_t four_finger_start_time;
   bool three_finger_gestures_enabled;
 
   /* Physical clickpad button & zone state */
@@ -273,11 +268,13 @@ static void synaptics_process_clickpad(struct synaptics_data *data,
       data->active_phys_btn = btn;
       data->phys_btn_used_in_touch = true;
       input_report_key(dev, btn, 1, true, K_NO_WAIT);
+      LOG_INF("[TP] >>> PHYSICAL CLICK DOWN (btn=0x%04X, contacts=%d) <<<", btn, contacts);
     } else {
       uint16_t rel_btn =
           data->active_phys_btn ? data->active_phys_btn : INPUT_BTN_LEFT;
       input_report_key(dev, rel_btn, 0, true, K_NO_WAIT);
       data->active_phys_btn = 0;
+      LOG_INF("[TP] >>> PHYSICAL CLICK UP (btn=0x%04X) <<<", rel_btn);
     }
   }
 }
@@ -360,38 +357,21 @@ static void synaptics_process_liftoff(struct synaptics_data *data,
   data->subpixel_rem_x = 0;
   data->subpixel_rem_y = 0;
 
-  if (data->gesture_max_fingers >= 4) {
-    if (data->prev_four_finger) {
-      int64_t dur4 = k_uptime_get() - data->four_finger_start_time;
-      if (is_hw_liftoff && !data->phys_btn_used_in_touch &&
-          dur4 < FOUR_FINGER_TAP_MAX_DURATION_MS) {
-        /* 4-Finger Tap: Toggle 3-finger gestures */
-        data->three_finger_gestures_enabled =
-            !data->three_finger_gestures_enabled;
-      }
-      data->prev_four_finger = false;
-    }
-    if (data->active_swipe_btn != 0) {
-      uint16_t btn = data->active_swipe_btn;
-      data->active_swipe_btn = 0;
-      k_work_cancel_delayable(&data->swipe_up_release_work);
-      k_work_cancel_delayable(&data->swipe_down_release_work);
-      input_report_key(dev, btn, 0, true, K_NO_WAIT);
-    }
-    data->three_finger_swiped = false;
-  } else if (data->gesture_max_fingers == 3) {
+  if (data->gesture_max_fingers == 3) {
     if (data->prev_three_finger) {
       int64_t dur3 = k_uptime_get() - data->three_finger_start_time;
-      if (is_hw_liftoff && !data->three_finger_swiped &&
-          !data->phys_btn_used_in_touch && dur3 < TAP_MAX_DURATION_MS) {
-        /* 3-Finger Tap: Middle Click (strictly on physical liftoff) */
+      if (!data->three_finger_swiped && !data->phys_btn_used_in_touch && dur3 < 300) {
+        /* 3-Finger Tap: Middle Click */
         input_report_key(dev, INPUT_BTN_MIDDLE, 1, true, K_NO_WAIT);
         k_work_reschedule(&data->tap_middle_release_work, K_MSEC(40));
+        LOG_INF("[TP] >>> 3-FINGER TAP CLICK (BTN_MIDDLE, dur=%lld ms) <<<", (long long)dur3);
+      } else {
+        LOG_INF("[TP] 3F Tap rejected: dur=%lld ms (limit 300), swiped=%d, btn_used=%d",
+                (long long)dur3, data->three_finger_swiped, data->phys_btn_used_in_touch);
       }
       data->prev_three_finger = false;
     }
     if (data->active_swipe_btn != 0) {
-      /* Guarantee active 3-finger swipe modifier is immediately released upon finger lift */
       uint16_t btn = data->active_swipe_btn;
       data->active_swipe_btn = 0;
       k_work_cancel_delayable(&data->swipe_up_release_work);
@@ -402,11 +382,15 @@ static void synaptics_process_liftoff(struct synaptics_data *data,
   } else if (data->gesture_max_fingers == 2) {
     if (data->prev_two_finger) {
       int64_t dur2 = k_uptime_get() - data->two_finger_start_time;
-      if (is_hw_liftoff && data->two_finger_mode == TWO_FINGER_IDLE &&
-          !data->phys_btn_used_in_touch && dur2 < TAP_MAX_DURATION_MS) {
-        /* 2-Finger Tap: Right Click (strictly on physical liftoff) */
+      if (data->two_finger_mode == TWO_FINGER_IDLE &&
+          !data->phys_btn_used_in_touch && dur2 < 300) {
+        /* 2-Finger Tap: Right Click */
         input_report_key(dev, INPUT_BTN_RIGHT, 1, true, K_NO_WAIT);
         k_work_reschedule(&data->tap_right_release_work, K_MSEC(40));
+        LOG_INF("[TP] >>> 2-FINGER TAP CLICK (BTN_RIGHT, dur=%lld ms) <<<", (long long)dur2);
+      } else {
+        LOG_INF("[TP] 2F Tap rejected: dur=%lld ms (limit 300), mode=%d (need IDLE=0), travel=%d, btn_used=%d",
+                (long long)dur2, data->two_finger_mode, data->two_finger_travel, data->phys_btn_used_in_touch);
       }
       if (data->two_finger_mode == TWO_FINGER_PINCH) {
         k_work_cancel_delayable(&data->pinch_in_release_work);
@@ -429,7 +413,6 @@ static void synaptics_process_liftoff(struct synaptics_data *data,
     }
   } else if (data->gesture_max_fingers == 1 || data->prev_touching) {
     if (data->prev_touching) {
-      /* Calculate true touch duration using the timestamp of the last active touch packet */
       int64_t touch_end = (data->last_packet_time > data->touch_start_time)
                               ? data->last_packet_time
                               : k_uptime_get();
@@ -441,16 +424,23 @@ static void synaptics_process_liftoff(struct synaptics_data *data,
         input_report_key(dev, INPUT_BTN_LEFT, 0, true, K_NO_WAIT);
         data->is_tap_dragging = false;
         data->last_tap_release_time = 0;
-      } else if (is_hw_liftoff && !data->palm_suppressed &&
+        LOG_INF("[TP] >>> TAP-AND-DRAG RELEASED (BTN_LEFT UP) <<<");
+      } else if (!data->palm_suppressed &&
                  !data->phys_btn_used_in_touch &&
                  duration < TAP_MAX_DURATION_MS &&
                  data->touch_max_disp < TAP_MAX_DISPLACEMENT) {
-        /* Single Tap: Click (strictly upon physical finger liftoff) */
+        /* Single Tap: Click */
         input_report_key(dev, INPUT_BTN_LEFT, 1, true, K_NO_WAIT);
         k_work_reschedule(&data->tap_release_work, K_MSEC(40));
         data->last_tap_release_time = touch_end;
         data->last_tap_x = data->touch_start_x;
         data->last_tap_y = data->touch_start_y;
+        LOG_INF("[TP] >>> TAP CLICK EMITTED (BTN_LEFT, dur=%lld ms, disp=%d) <<<",
+                (long long)duration, data->touch_max_disp);
+      } else {
+        LOG_INF("[TP] Tap rejected: dur=%lld (limit %d), disp=%d (limit %d), palm=%d, btn_used=%d",
+                (long long)duration, TAP_MAX_DURATION_MS, data->touch_max_disp,
+                TAP_MAX_DISPLACEMENT, data->palm_suppressed, data->phys_btn_used_in_touch);
       }
       data->prev_touching = false;
     }
@@ -460,7 +450,6 @@ static void synaptics_process_liftoff(struct synaptics_data *data,
   data->prev_touching = false;
   data->prev_two_finger = false;
   data->prev_three_finger = false;
-  data->prev_four_finger = false;
   data->palm_suppressed = false;
   data->phys_btn_used_in_touch = false;
 }
@@ -512,21 +501,14 @@ static void synaptics_work_handler(struct k_work *work) {
       bool tip2 = synaptics_slot_valid(status2);
       uint16_t y2 = (uint16_t)(buf[16] | (buf[17] << 8));
 
-      /* Slot 3 (Finger 4) */
-      uint8_t status3 = buf[18];
-      bool tip3 = synaptics_slot_valid(status3);
-
       uint8_t contact_count = buf[30];
+      (void)contact_count;
 
-      /* Determine active contact count from validated hardware tip+confidence slots */
+      /* Determine active contact count strictly from validated hardware tip+confidence slots */
       uint8_t contacts = 0;
       if (tip0) contacts++;
       if (tip1) contacts++;
       if (tip2) contacts++;
-      if (tip3) contacts++;
-      if (contact_count > contacts) {
-        contacts = contact_count;
-      }
 
       /* Track maximum concurrent fingers in the current touch sequence */
       if (contacts > data->gesture_max_fingers) {
@@ -545,26 +527,9 @@ static void synaptics_work_handler(struct k_work *work) {
         synaptics_process_liftoff(data, true);
       }
       /* ========================================================================= */
-      /* CASE 2: ACTIVE 4-FINGER GESTURE (Toggle 3-Finger Gestures)                */
+      /* CASE 2: ACTIVE 3-FINGER GESTURE (Task View / Show Desktop)                */
       /* ========================================================================= */
-      else if (data->gesture_max_fingers >= 4) {
-        data->prev_touching = false;
-        data->prev_two_finger = false;
-        data->prev_three_finger = false;
-        data->inertial_dy = 0;
-        data->grace_dx = 0;
-        data->grace_dy = 0;
-        data->in_grace_window = false;
-
-        if (!data->prev_four_finger) {
-          data->four_finger_start_time = k_uptime_get();
-          data->prev_four_finger = true;
-        }
-      }
-      /* ========================================================================= */
-      /* CASE 3: ACTIVE 3-FINGER GESTURE (Task View / Show Desktop)                */
-      /* ========================================================================= */
-      else if (data->gesture_max_fingers == 3) {
+      else if (data->gesture_max_fingers >= 3) {
         data->prev_touching = false;
         data->prev_two_finger = false;
         data->inertial_dy = 0;
@@ -602,6 +567,7 @@ static void synaptics_work_handler(struct k_work *work) {
             data->three_finger_start_y = avg3_y;
             data->three_finger_swiped = false;
             data->prev_three_finger = true;
+            LOG_INF("[TP] Touch Down (3F): avg_y=%d", avg3_y);
           }
         }
       }
@@ -727,6 +693,7 @@ static void synaptics_work_handler(struct k_work *work) {
             data->two_finger_scrolled = false;
             data->last_scroll_dy = 0;
             data->prev_two_finger = true;
+            LOG_INF("[TP] Touch Down (2F): centroid=(%d,%d) span=%d", avg_x, avg_y, span);
           }
         } else {
           /* Dropout: one finger lifted or lost confidence (e.g. at sensor boundary) */
@@ -771,6 +738,7 @@ static void synaptics_work_handler(struct k_work *work) {
             data->in_grace_window = false;
             data->grace_dx = 0;
             data->grace_dy = 0;
+            LOG_INF("[TP] >>> TAP-AND-DRAG CONTINUED (BTN_LEFT HELD) <<<");
           } else if (!data->palm_suppressed && data->last_tap_release_time > 0 &&
                      (now - data->last_tap_release_time) < TAP_DRAG_TIMEOUT_MS &&
                      d_tap_x < TAP_DRAG_MAX_DISTANCE &&
@@ -784,12 +752,15 @@ static void synaptics_work_handler(struct k_work *work) {
             data->in_grace_window = false;
             data->grace_dx = 0;
             data->grace_dy = 0;
+            LOG_INF("[TP] >>> TAP-AND-DRAG ACTIVATED (BTN_LEFT DOWN, d_tap=(%d,%d)) <<<", d_tap_x, d_tap_y);
           } else {
             data->is_tap_dragging = false;
             data->last_tap_release_time = 0;
             data->in_grace_window = true;
             data->grace_dx = 0;
             data->grace_dy = 0;
+            LOG_INF("[TP] Touch Down (1F): start=(%d,%d)%s", x0, y0,
+                    data->palm_suppressed ? " [PALM SUPPRESSED]" : "");
           }
 
           data->prev_x0 = x0;
@@ -883,7 +854,8 @@ static void synaptics_work_handler(struct k_work *work) {
     int64_t timeout_ms = data->is_tap_dragging ? SYNAPTICS_DRAG_TIMEOUT_MS : SYNAPTICS_LIFTOFF_TIMEOUT_MS;
     if (inactive_ms >= timeout_ms) {
       if (data->prev_touching || data->prev_two_finger || data->prev_three_finger ||
-          data->prev_four_finger || data->gesture_max_fingers > 0 || data->is_tap_dragging) {
+          data->gesture_max_fingers > 0 || data->is_tap_dragging) {
+        LOG_INF("[TP] Inactivity timeout liftoff (%lld ms silence)", (long long)inactive_ms);
         synaptics_process_liftoff(data, false);
       }
     }
@@ -900,7 +872,7 @@ static void synaptics_work_handler(struct k_work *work) {
              data->pend_wheel != 0 || data->pend_hwheel != 0) {
     k_work_reschedule(&data->work, K_MSEC(SYNAPTICS_BLE_FRAME_MS));
   } else if (data->prev_touching || data->prev_two_finger ||
-             data->prev_three_finger || data->prev_four_finger ||
+             data->prev_three_finger ||
              data->gesture_max_fingers > 0 || data->is_tap_dragging) {
     k_work_reschedule(&data->work, K_MSEC(20));
   }
