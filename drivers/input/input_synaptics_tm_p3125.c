@@ -41,12 +41,9 @@ LOG_MODULE_REGISTER(synaptics_tm_p3125, LOG_LEVEL_INF);
 #define CLICKPAD_RIGHT_X_MIN 650
 #define CLICKPAD_RIGHT_Y_MIN 650
 
-/* Scroll, pinch & gesture thresholds */
+/* Scroll & gesture thresholds */
 #define SCROLL_STEP 24                 /* ~2.1 mm travel per mouse wheel notch */
 #define TWO_FINGER_DEADZONE_TRAVEL 24  /* ~2.1 mm threshold before 2F scroll starts */
-#define TWO_FINGER_DEADZONE_SPAN 35    /* ~3.0 mm threshold before pinch starts */
-#define PINCH_MIN_INITIAL_SPAN 160
-#define PINCH_STEP 55                  /* ~4.8 mm span change per zoom step */
 #define THREE_FINGER_SWIPE_THRESHOLD 120
 #define JITTER_DEADZONE_COUNTS 3       /* ~0.26 mm stationary hysteresis */
 #define THREE_FINGER_GESTURES_DEFAULT false
@@ -60,7 +57,6 @@ LOG_MODULE_REGISTER(synaptics_tm_p3125, LOG_LEVEL_INF);
 enum synaptics_2f_mode {
   TWO_FINGER_IDLE = 0,
   TWO_FINGER_SCROLL,
-  TWO_FINGER_PINCH,
 };
 
 static inline bool synaptics_slot_valid(uint8_t status) {
@@ -79,14 +75,12 @@ struct synaptics_data {
   struct k_work_delayable heartbeat_work;
   struct gpio_callback gpio_cb;
 
-  /* Tap, pinch, and swipe release works */
+  /* Tap and swipe release works */
   struct k_work_delayable tap_release_work;
   struct k_work_delayable tap_right_release_work;
   struct k_work_delayable tap_middle_release_work;
   struct k_work_delayable swipe_up_release_work;
   struct k_work_delayable swipe_down_release_work;
-  struct k_work_delayable pinch_in_release_work;
-  struct k_work_delayable pinch_out_release_work;
   struct k_work_delayable inertial_scroll_work;
 
   /* Active I2C address */
@@ -119,15 +113,10 @@ struct synaptics_data {
   int64_t last_tap_release_time;
   bool is_tap_dragging;
 
-  /* 2-Finger scroll, pinch & Inertia tracking */
+  /* 2-Finger scroll & Inertia tracking */
   bool prev_two_finger;
   enum synaptics_2f_mode two_finger_mode;
-  uint16_t two_finger_initial_span;
-  uint16_t prev_span;
   uint16_t two_finger_travel;
-  int16_t two_finger_span_delta;
-  int16_t pinch_accum;
-  int64_t last_pinch_time;
   uint16_t prev_scroll_x;
   uint16_t prev_scroll_y;
   int16_t scroll_accum_y;
@@ -323,20 +312,6 @@ static void synaptics_swipe_down_release_handler(struct k_work *work) {
   }
 }
 
-static void synaptics_pinch_in_release_handler(struct k_work *work) {
-  struct k_work_delayable *dwork = k_work_delayable_from_work(work);
-  struct synaptics_data *data =
-      CONTAINER_OF(dwork, struct synaptics_data, pinch_in_release_work);
-  input_report_key(data->dev, INPUT_BTN_5, 0, true, K_NO_WAIT);
-}
-
-static void synaptics_pinch_out_release_handler(struct k_work *work) {
-  struct k_work_delayable *dwork = k_work_delayable_from_work(work);
-  struct synaptics_data *data =
-      CONTAINER_OF(dwork, struct synaptics_data, pinch_out_release_work);
-  input_report_key(data->dev, INPUT_BTN_6, 0, true, K_NO_WAIT);
-}
-
 static void synaptics_inertial_scroll_handler(struct k_work *work) {
   (void)work;
   /* No-op: OS native smooth scrolling handles deceleration without reverse bounce */
@@ -382,30 +357,22 @@ static void synaptics_process_liftoff(struct synaptics_data *data,
   } else if (data->gesture_max_fingers == 2) {
     if (data->prev_two_finger) {
       int64_t dur2 = k_uptime_get() - data->two_finger_start_time;
-      if (data->two_finger_mode == TWO_FINGER_IDLE &&
+      if (!data->two_finger_scrolled &&
           !data->phys_btn_used_in_touch && dur2 < 300) {
         /* 2-Finger Tap: Right Click */
         input_report_key(dev, INPUT_BTN_RIGHT, 1, true, K_NO_WAIT);
         k_work_reschedule(&data->tap_right_release_work, K_MSEC(40));
         LOG_INF("[TP] >>> 2-FINGER TAP CLICK (BTN_RIGHT, dur=%lld ms) <<<", (long long)dur2);
       } else {
-        LOG_INF("[TP] 2F Tap rejected: dur=%lld ms (limit 300), mode=%d (need IDLE=0), travel=%d, btn_used=%d",
-                (long long)dur2, data->two_finger_mode, data->two_finger_travel, data->phys_btn_used_in_touch);
-      }
-      if (data->two_finger_mode == TWO_FINGER_PINCH) {
-        k_work_cancel_delayable(&data->pinch_in_release_work);
-        k_work_cancel_delayable(&data->pinch_out_release_work);
-        input_report_key(dev, INPUT_BTN_5, 0, true, K_NO_WAIT);
-        input_report_key(dev, INPUT_BTN_6, 0, true, K_NO_WAIT);
+        LOG_INF("[TP] 2F Tap rejected: dur=%lld ms (limit 300), scrolled=%d, travel=%d, btn_used=%d",
+                (long long)dur2, data->two_finger_scrolled, data->two_finger_travel, data->phys_btn_used_in_touch);
       }
       k_work_cancel_delayable(&data->inertial_scroll_work);
       data->inertial_dy = 0;
       data->last_scroll_dy = 0;
       data->scroll_accum_y = 0;
       data->scroll_accum_x = 0;
-      data->pinch_accum = 0;
       data->two_finger_travel = 0;
-      data->two_finger_span_delta = 0;
       data->two_finger_mode = TWO_FINGER_IDLE;
       data->prev_two_finger = false;
       data->two_finger_scrolled = false;
@@ -572,7 +539,7 @@ static void synaptics_work_handler(struct k_work *work) {
         }
       }
       /* ========================================================================= */
-      /* CASE 3: ACTIVE 2-FINGER GESTURE (Anti-Jitter Tap, Scroll & Pinch-to-Zoom) */
+      /* CASE 3: ACTIVE 2-FINGER GESTURE (Anti-Jitter Tap & 2F Natural Scroll)     */
       /* ========================================================================= */
       else if (data->gesture_max_fingers == 2) {
         data->prev_touching = false;
@@ -584,40 +551,23 @@ static void synaptics_work_handler(struct k_work *work) {
         if (tip0 && tip1) {
           uint16_t avg_x = (x0 + x1) / 2;
           uint16_t avg_y = (y0 + y1) / 2;
-          uint16_t span = (uint16_t)(((x0 > x1) ? (x0 - x1) : (x1 - x0)) +
-                                     ((y0 > y1) ? (y0 - y1) : (y1 - y0)));
 
           if (data->prev_two_finger) {
             int16_t dx = (int16_t)avg_x - (int16_t)data->prev_scroll_x;
             int16_t dy = (int16_t)avg_y - (int16_t)data->prev_scroll_y;
-            int16_t d_span = (int16_t)span - (int16_t)data->prev_span;
 
             data->prev_scroll_x = avg_x;
             data->prev_scroll_y = avg_y;
-            data->prev_span = span;
 
             /* Filter out abnormal positional jumps */
-            if (dx > -250 && dx < 250 && dy > -250 && dy < 250 &&
-                d_span > -350 && d_span < 350) {
+            if (dx > -250 && dx < 250 && dy > -250 && dy < 250) {
               int16_t abs_dx = (dx >= 0) ? dx : -dx;
               int16_t abs_dy = (dy >= 0) ? dy : -dy;
 
               data->two_finger_travel += (uint16_t)(abs_dx + abs_dy);
-              data->two_finger_span_delta += d_span;
-              int16_t abs_span_delta = (data->two_finger_span_delta >= 0)
-                                           ? data->two_finger_span_delta
-                                           : -data->two_finger_span_delta;
 
               if (data->two_finger_mode == TWO_FINGER_IDLE) {
-                if (data->two_finger_initial_span >= PINCH_MIN_INITIAL_SPAN &&
-                    abs_span_delta >= TWO_FINGER_DEADZONE_SPAN &&
-                    (abs_span_delta * 2) >
-                        ((int16_t)data->two_finger_travel * 3)) {
-                  data->two_finger_mode = TWO_FINGER_PINCH;
-                  data->two_finger_scrolled = true;
-                  data->pinch_accum = data->two_finger_span_delta;
-                } else if (data->two_finger_travel >=
-                           TWO_FINGER_DEADZONE_TRAVEL) {
+                if (data->two_finger_travel >= TWO_FINGER_DEADZONE_TRAVEL) {
                   data->two_finger_mode = TWO_FINGER_SCROLL;
                   data->two_finger_scrolled = true;
                   if (abs_dy >= abs_dx) {
@@ -628,12 +578,6 @@ static void synaptics_work_handler(struct k_work *work) {
                     data->scroll_accum_y = 0;
                   }
                 }
-              } else if (data->two_finger_mode == TWO_FINGER_PINCH) {
-                if ((d_span > 0 && data->pinch_accum < 0) ||
-                    (d_span < 0 && data->pinch_accum > 0)) {
-                  data->pinch_accum = 0;
-                }
-                data->pinch_accum += d_span;
               } else if (data->two_finger_mode == TWO_FINGER_SCROLL) {
                 /* Directional lock: prioritize vertical if vertical movement dominates */
                 if (abs_dy >= abs_dx) {
@@ -641,27 +585,6 @@ static void synaptics_work_handler(struct k_work *work) {
                 } else if (abs_dx > (abs_dy * 2)) {
                   /* Horizontal scroll only if distinctly horizontal */
                   data->scroll_accum_x += dx;
-                }
-              }
-
-              int64_t now_ms = k_uptime_get();
-              if (data->two_finger_mode == TWO_FINGER_PINCH &&
-                  data->pinch_accum >= PINCH_STEP) {
-                if ((now_ms - data->last_pinch_time) >= 60) {
-                  data->last_pinch_time = now_ms;
-                  k_work_cancel_delayable(&data->pinch_in_release_work);
-                  input_report_key(dev, INPUT_BTN_5, 1, true, K_NO_WAIT);
-                  k_work_reschedule(&data->pinch_in_release_work, K_MSEC(25));
-                  data->pinch_accum = 0;
-                }
-              } else if (data->two_finger_mode == TWO_FINGER_PINCH &&
-                         data->pinch_accum <= -PINCH_STEP) {
-                if ((now_ms - data->last_pinch_time) >= 60) {
-                  data->last_pinch_time = now_ms;
-                  k_work_cancel_delayable(&data->pinch_out_release_work);
-                  input_report_key(dev, INPUT_BTN_6, 1, true, K_NO_WAIT);
-                  k_work_reschedule(&data->pinch_out_release_work, K_MSEC(25));
-                  data->pinch_accum = 0;
                 }
               }
 
@@ -681,29 +604,15 @@ static void synaptics_work_handler(struct k_work *work) {
           } else {
             data->prev_scroll_x = avg_x;
             data->prev_scroll_y = avg_y;
-            data->two_finger_initial_span = span;
-            data->prev_span = span;
             data->two_finger_travel = 0;
-            data->two_finger_span_delta = 0;
             data->scroll_accum_x = 0;
             data->scroll_accum_y = 0;
-            data->pinch_accum = 0;
             data->two_finger_mode = TWO_FINGER_IDLE;
             data->two_finger_start_time = k_uptime_get();
             data->two_finger_scrolled = false;
             data->last_scroll_dy = 0;
             data->prev_two_finger = true;
-            LOG_INF("[TP] Touch Down (2F): centroid=(%d,%d) span=%d", avg_x, avg_y, span);
-          }
-        } else {
-          /* Dropout: one finger lifted or lost confidence (e.g. at sensor boundary) */
-          if (data->two_finger_mode == TWO_FINGER_PINCH) {
-            k_work_cancel_delayable(&data->pinch_in_release_work);
-            k_work_cancel_delayable(&data->pinch_out_release_work);
-            input_report_key(dev, INPUT_BTN_5, 0, true, K_NO_WAIT);
-            input_report_key(dev, INPUT_BTN_6, 0, true, K_NO_WAIT);
-            data->two_finger_mode = TWO_FINGER_IDLE;
-            data->pinch_accum = 0;
+            LOG_INF("[TP] Touch Down (2F): centroid=(%d,%d)", avg_x, avg_y);
           }
         }
       }
@@ -862,12 +771,12 @@ static void synaptics_work_handler(struct k_work *work) {
   }
 
   /* Scheduling:
-   * 1. If INT pin is still asserted, reschedule in 1 ms to continue draining FIFO.
+   * 1. If INT pin is still asserted, reschedule at SYNAPTICS_BLE_FRAME_MS (8 ms) to prevent workqueue starvation.
    * 2. If un-flushed deltas remain pending, schedule flush at SYNAPTICS_BLE_FRAME_MS.
    * 3. If fingers are still active or dragging, schedule check at 20 ms.
    */
   if (gpio_pin_get_dt(&config->irq_gpio) > 0) {
-    k_work_reschedule(&data->work, K_MSEC(1));
+    k_work_reschedule(&data->work, K_MSEC(SYNAPTICS_BLE_FRAME_MS));
   } else if (data->pend_dx != 0 || data->pend_dy != 0 ||
              data->pend_wheel != 0 || data->pend_hwheel != 0) {
     k_work_reschedule(&data->work, K_MSEC(SYNAPTICS_BLE_FRAME_MS));
@@ -985,10 +894,7 @@ static int synaptics_init(const struct device *dev) {
   k_work_init_delayable(&data->tap_middle_release_work, synaptics_tap_middle_release_handler);
   k_work_init_delayable(&data->swipe_up_release_work, synaptics_swipe_up_release_handler);
   k_work_init_delayable(&data->swipe_down_release_work, synaptics_swipe_down_release_handler);
-  k_work_init_delayable(&data->pinch_in_release_work, synaptics_pinch_in_release_handler);
-  k_work_init_delayable(&data->pinch_out_release_work, synaptics_pinch_out_release_handler);
   k_work_init_delayable(&data->inertial_scroll_work, synaptics_inertial_scroll_handler);
-  data->last_pinch_time = -100;
   data->three_finger_gestures_enabled = THREE_FINGER_GESTURES_DEFAULT;
 
   if (!i2c_is_ready_dt(&config->i2c) || !gpio_is_ready_dt(&config->irq_gpio)) {
