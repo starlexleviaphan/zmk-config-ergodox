@@ -9,13 +9,3 @@ menuconfig SYNAPTICS_TM_P3125
     select INPUT
     help
       Enable driver for Synaptics TM-P3125 I2C-HID touchpad sensor.
-
-if SYNAPTICS_TM_P3125
-
-config SYNAPTICS_DISABLE_PHYSICAL_CLICK
-    bool "Disable physical clickpad switch reporting"
-    default y
-    help
-      Ignore mechanical clickpad switch inputs (e.g. if clamped by chassis or using tap-to-click).
-
-endif

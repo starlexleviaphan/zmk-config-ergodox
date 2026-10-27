@@ -238,9 +238,6 @@ static void synaptics_apply_ballistics(struct synaptics_data *data,
 static void synaptics_process_clickpad(struct synaptics_data *data,
                                        bool physical_btn, uint8_t contacts,
                                        uint16_t x0, uint16_t y0, int64_t now) {
-#if defined(CONFIG_SYNAPTICS_DISABLE_PHYSICAL_CLICK)
-  physical_btn = false;
-#endif
   if (physical_btn || data->prev_btn_left) {
     data->phys_btn_used_in_touch = true;
   }
