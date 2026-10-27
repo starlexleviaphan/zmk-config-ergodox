@@ -482,16 +482,32 @@ static void synaptics_work_handler(struct k_work *work) {
       /* Slot 0 (Finger 1) */
       uint8_t status0 = buf[3];
       bool tip0 = (data->prev_touching || data->is_tap_dragging)
-                      ? ((status0 & 0x02) != 0)
+                      ? ((status0 & 0x03) != 0)
                       : synaptics_slot_valid(status0);
       uint16_t x0 = (uint16_t)(buf[4] | (buf[5] << 8));
       uint16_t y0 = (uint16_t)(buf[6] | (buf[7] << 8));
 
       /* Slot 1 (Finger 2) */
       uint8_t status1 = buf[8];
-      bool tip1 = synaptics_slot_valid(status1);
+      bool tip1 = data->prev_two_finger
+                      ? ((status1 & 0x03) != 0)
+                      : synaptics_slot_valid(status1);
       uint16_t x1 = (uint16_t)(buf[9] | (buf[10] << 8));
       uint16_t y1 = (uint16_t)(buf[11] | (buf[12] << 8));
+
+      /* Ignore parasitic edge contacts on Slot 1 */
+      if (tip1 && (x1 < PALM_EDGE_LEFT || x1 > PALM_EDGE_RIGHT || y1 < 30)) {
+        tip1 = false;
+      }
+
+      /* If Slot 0 is caught on the edge but Slot 1 is a valid interior touch, promote Slot 1 */
+      if (tip0 && (x0 < PALM_EDGE_LEFT || x0 > PALM_EDGE_RIGHT || y0 < 30) && tip1) {
+        x0 = x1;
+        y0 = y1;
+        status0 = status1;
+        tip1 = false;
+        data->palm_suppressed = false;
+      }
 
       /* Slot 2 (Finger 3) */
       uint8_t status2 = buf[13];
