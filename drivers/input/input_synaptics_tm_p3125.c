@@ -515,7 +515,18 @@ static void synaptics_work_handler(struct k_work *work) {
       uint16_t y2 = (uint16_t)(buf[16] | (buf[17] << 8));
 
       uint8_t contact_count = buf[30];
-      (void)contact_count;
+
+      /* Restrict active slots strictly to the hardware-reported contact count */
+      if (contact_count == 0) {
+        tip0 = false;
+        tip1 = false;
+        tip2 = false;
+      } else if (contact_count == 1) {
+        tip1 = false;
+        tip2 = false;
+      } else if (contact_count == 2) {
+        tip2 = false;
+      }
 
       /* Determine active contact count strictly from validated hardware tip+confidence slots */
       uint8_t contacts = 0;
